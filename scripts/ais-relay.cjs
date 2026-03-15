@@ -2562,7 +2562,22 @@ function classifyCacheKey(title) {
 }
 
 // LLM provider fallback chain — mirrors seed-insights.mjs LLM_PROVIDERS
+// Order: ollama → groq → openrouter (canonical chain, mirrors server/_shared/llm.ts)
 const CLASSIFY_LLM_PROVIDERS = [
+  {
+    name: 'ollama',
+    envKey: 'OLLAMA_API_URL',
+    apiUrlFn: (baseUrl) => new URL('/v1/chat/completions', baseUrl).toString(),
+    model: () => process.env.OLLAMA_MODEL || 'llama3.1:8b',
+    headers: (_key) => {
+      const h = { 'Content-Type': 'application/json', 'User-Agent': CHROME_UA };
+      const apiKey = process.env.OLLAMA_API_KEY;
+      if (apiKey) h.Authorization = `Bearer ${apiKey}`;
+      return h;
+    },
+    extraBody: { think: false },
+    timeout: 30000,
+  },
   {
     name: 'groq',
     envKey: 'GROQ_API_KEY',
@@ -2577,20 +2592,6 @@ const CLASSIFY_LLM_PROVIDERS = [
     apiUrl: 'https://openrouter.ai/api/v1/chat/completions',
     model: 'google/gemini-2.5-flash',
     headers: (key) => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://worldmonitor.app', 'X-Title': 'World Monitor', 'User-Agent': CHROME_UA }),
-    timeout: 30000,
-  },
-  {
-    name: 'ollama',
-    envKey: 'OLLAMA_API_URL',
-    apiUrlFn: (baseUrl) => new URL('/v1/chat/completions', baseUrl).toString(),
-    model: () => process.env.OLLAMA_MODEL || 'llama3.1:8b',
-    headers: (_key) => {
-      const h = { 'Content-Type': 'application/json', 'User-Agent': CHROME_UA };
-      const apiKey = process.env.OLLAMA_API_KEY;
-      if (apiKey) h.Authorization = `Bearer ${apiKey}`;
-      return h;
-    },
-    extraBody: { think: false },
     timeout: 30000,
   },
 ];
