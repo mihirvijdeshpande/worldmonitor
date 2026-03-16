@@ -67,6 +67,32 @@ describe('military flight classification', () => {
     assert.equal(hints.commercialHint, false);
   });
 
+  it('does not trigger military hints from short acronyms embedded in unrelated words', () => {
+    const hints = deriveSourceHints({
+      operatorName: 'Civil Aircraft Leasing',
+      aircraftTypeLabel: 'aircraft transport',
+      registration: 'G-RAFT',
+      aircraftDescription: 'airplane support platform',
+    });
+    assert.equal(hints.militaryHint, false);
+    assert.equal(hints.militaryOperatorHint, false);
+  });
+
+  it('detects additional high-signal source aircraft types', () => {
+    assert.equal(detectAircraftTypeFromSourceMeta({
+      aircraftTypeLabel: 'A330 MRTT tanker transport',
+    }), 'tanker');
+    assert.equal(detectAircraftTypeFromSourceMeta({
+      aircraftTypeLabel: 'E-2 early warning aircraft',
+    }), 'awacs');
+    assert.equal(detectAircraftTypeFromSourceMeta({
+      aircraftTypeLabel: 'A400M military airlift',
+    }), 'transport');
+    assert.equal(detectAircraftTypeFromSourceMeta({
+      aircraftTypeLabel: 'ISR surveillance platform',
+    }), 'reconnaissance');
+  });
+
   it('rejects commercial-looking flights even when they match an ambiguous hex range', () => {
     const state = makeState({
       icao24: '06A250',

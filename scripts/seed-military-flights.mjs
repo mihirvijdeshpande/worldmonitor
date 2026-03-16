@@ -332,8 +332,8 @@ function deriveSourceHints(sourceMeta = {}) {
   const hintText = getSourceHintText(sourceMeta);
   return {
     hintText,
-    militaryHint: /(AIR FORCE|AIR ?SELF ?DEFEN[CS]E|MILIT|NAVY|MARINE|ARMY|DEFEN[CS]E|SQUADRON|USAF|USN|USMC|RAF|RCAF|RAAF|NATO|PLAAF|PLAN|VKS|RECON|AWACS|TANKER|AIRLIFT|FIGHTER|BOMBER|DRONE)/.test(hintText),
-    militaryOperatorHint: /(AIR FORCE|AIR ?SELF ?DEFEN[CS]E|NAVY|MARINE|ARMY|DEFEN[CS]E|SQUADRON|EMIRI AIR FORCE|ROYAL .* AIR FORCE|AEROSPACE FORCES|PLAAF|PLAN|NATO)/.test(hintText),
+    militaryHint: /(AIR FORCE|AIR ?SELF ?DEFEN[CS]E|MILIT|NAVY|MARINE|ARMY|DEFEN[CS]E|SQUADRON|\bUSAF\b|\bUSN\b|\bUSMC\b|\bRAF\b|\bRCAF\b|\bRAAF\b|NATO|\bPLAAF\b|\bPLAN\b|\bVKS\b|RECON|AWACS|TANKER|AIRLIFT|FIGHTER|BOMBER|DRONE)/.test(hintText),
+    militaryOperatorHint: /(AIR FORCE|AIR ?SELF ?DEFEN[CS]E|NAVY|MARINE|ARMY|DEFEN[CS]E|SQUADRON|EMIRI AIR FORCE|ROYAL .* AIR FORCE|AEROSPACE FORCES|\bPLAAF\b|\bPLAN\b|NATO)/.test(hintText),
     commercialHint: /(AIRLINES|AIRWAYS|LOGISTICS|EXPRESS|CARGOLUX|TURKISH AIRLINES|ETHIOPIAN AIRLINES|QATAR AIRWAYS|EMIRATES SKYCARGO|SAUDIA)/.test(hintText),
   };
 }
@@ -341,10 +341,10 @@ function deriveSourceHints(sourceMeta = {}) {
 function detectAircraftTypeFromSourceMeta(sourceMeta = {}) {
   const hintText = getSourceHintText(sourceMeta);
   if (!hintText) return 'unknown';
-  if (/(KC-?135|KC-?46|TANKER|REFUEL)/.test(hintText)) return 'tanker';
-  if (/(AWACS|E-3|E-7|AEW|EARLY WARNING)/.test(hintText)) return 'awacs';
-  if (/(C-17|C17|C-130|C130|TRANSPORT|AIRLIFT|CARGO)/.test(hintText)) return 'transport';
-  if (/(RC-135|RC135|RECON|SURVEILLANCE|SIGINT|U-2|P-8|PATROL)/.test(hintText)) return 'reconnaissance';
+  if (/(KC-?135|KC-?46|KC-?10|A330 MRTT|MRTT|TANKER|REFUEL)/.test(hintText)) return 'tanker';
+  if (/(AWACS|AEW&C|AEW|E-2|E-3|E-6|E-7|EARLY WARNING)/.test(hintText)) return 'awacs';
+  if (/(C-17|C17|C-130|C130|C-2|C2|C-27|C27|A400M|IL-76|IL76|Y-20|Y20|TRANSPORT|AIRLIFT|CARGO)/.test(hintText)) return 'transport';
+  if (/(RC-135|RC135|RECON|SURVEILLANCE|SIGINT|ELINT|ISR|U-2|P-8|P8|P-3|P3|PATROL)/.test(hintText)) return 'reconnaissance';
   if (/(MQ-9|MQ9|RQ-4|RQ4|DRONE|UAS|UAV)/.test(hintText)) return 'drone';
   if (/(B-52|B52|B-1|B1|B-2|B2|BOMBER)/.test(hintText)) return 'bomber';
   if (/(F-16|F16|F-15|F15|F-18|F18|F-22|F22|F-35|F35|J-10|J10|J-11|J11|J-16|J16|SU-27|SU27|SU-30|SU30|SU-35|SU35|MIG-29|MIG29|FIGHTER)/.test(hintText)) return 'fighter';
