@@ -72,6 +72,7 @@ const STANDALONE_KEYS = {
   corridorrisk:          'supply_chain:corridorrisk:v1',
   chokepointTransits:    'supply_chain:chokepoint_transits:v1',
   transitSummaries:      'supply_chain:transit-summaries:v1',
+  thermalEscalation:     'thermal:escalation:v1',
 };
 
 const SEED_META = {
@@ -133,6 +134,7 @@ const SEED_META = {
   customsRevenue:      { key: 'seed-meta:trade:customs-revenue',              maxStaleMin: 1440 },
   sanctionsPressure:   { key: 'seed-meta:sanctions:pressure',                 maxStaleMin: 720 },
   radiationWatch:      { key: 'seed-meta:radiation:observations',             maxStaleMin: 30 },
+  thermalEscalation:   { key: 'seed-meta:thermal:escalation',                 maxStaleMin: 240 },
 };
 
 // Standalone keys that are populated on-demand by RPC handlers (not seeds).
@@ -149,7 +151,7 @@ const ON_DEMAND_KEYS = new Set([
 
 // Keys where 0 records is a valid healthy state (e.g. no airports closed).
 // The key must still exist in Redis; only the record count can be 0.
-const EMPTY_DATA_OK_KEYS = new Set(['notamClosures']);
+const EMPTY_DATA_OK_KEYS = new Set(['notamClosures', 'faaDelays', 'gpsjam']);
 
 // Cascade groups: if any key in the group has data, all empty siblings are OK.
 // Theater posture uses live → stale → backup fallback chain.
@@ -331,9 +333,14 @@ export default async function handler(req) {
       if (cascadeCovered) {
         status = 'OK_CASCADE';
         okCount++;
-      } else if (EMPTY_DATA_OK_KEYS.has(name) && seedStale === false) {
-        status = 'OK';
-        okCount++;
+      } else if (EMPTY_DATA_OK_KEYS.has(name)) {
+        if (seedStale === true) {
+          status = 'STALE_SEED';
+          warnCount++;
+        } else {
+          status = 'OK';
+          okCount++;
+        }
       } else if (isOnDemand) {
         status = 'EMPTY_ON_DEMAND';
         warnCount++;
@@ -346,8 +353,13 @@ export default async function handler(req) {
         status = 'OK_CASCADE';
         okCount++;
       } else if (EMPTY_DATA_OK_KEYS.has(name)) {
-        status = 'OK';
-        okCount++;
+        if (seedStale === true) {
+          status = 'STALE_SEED';
+          warnCount++;
+        } else {
+          status = 'OK';
+          okCount++;
+        }
       } else if (isOnDemand) {
         status = 'EMPTY_ON_DEMAND';
         warnCount++;
