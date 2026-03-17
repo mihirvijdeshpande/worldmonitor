@@ -2312,6 +2312,17 @@ function finalizeSituationCluster(cluster) {
   };
 }
 
+function computeSituationSimilarity(currentCluster, priorCluster) {
+  const overlapCount = (left, right) => left.filter((item) => right.includes(item)).length;
+  return (
+    overlapCount(currentCluster.regions || [], priorCluster.regions || []) * 3 +
+    overlapCount(currentCluster.actors || [], priorCluster.actors || []) * 2 +
+    overlapCount(currentCluster.domains || [], priorCluster.domains || []) * 1.5 +
+    overlapCount(currentCluster.branchKinds || [], priorCluster.branchKinds || []) * 1 +
+    overlapCount(currentCluster.forecastIds || [], priorCluster.forecastIds || []) * 0.5
+  );
+}
+
 function buildSituationClusters(predictions) {
   const clusters = [];
 
@@ -2376,7 +2387,20 @@ function buildSituationContinuitySummary(currentSituationClusters, priorWorldSta
   const weakened = [];
 
   for (const cluster of currentSituationClusters) {
-    const prev = priorSituationClusters.find((item) => item.id === cluster.id);
+    let prev = priorSituationClusters.find((item) => item.id === cluster.id);
+    if (!prev) {
+      let bestMatch = null;
+      let bestScore = 0;
+      for (const priorCluster of priorSituationClusters) {
+        if (matchedPriorIds.has(priorCluster.id)) continue;
+        const score = computeSituationSimilarity(cluster, priorCluster);
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = priorCluster;
+        }
+      }
+      if (bestMatch && bestScore >= 4) prev = bestMatch;
+    }
     if (!prev) {
       newlyActive.push(cluster);
       continue;
