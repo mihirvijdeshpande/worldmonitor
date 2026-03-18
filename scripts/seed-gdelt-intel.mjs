@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { loadEnvFile, CHROME_UA, runSeed, sleep } from './_seed-utils.mjs';
+import { loadEnvFile, CHROME_UA, runSeed, sleep, verifySeedKey } from './_seed-utils.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -95,13 +95,34 @@ async function fetchAllTopics() {
     console.log(`    ${result.articles.length} articles`);
     topics.push(result);
   }
+
+  // For topics that returned 0 articles (rate-limited), preserve the previous
+  // snapshot's articles rather than publishing empty results over good cached data.
+  const emptyTopics = topics.filter((t) => t.articles.length === 0);
+  if (emptyTopics.length > 0) {
+    const previous = await verifySeedKey(CANONICAL_KEY).catch(() => null);
+    if (previous && Array.isArray(previous.topics)) {
+      const prevMap = new Map(previous.topics.map((t) => [t.id, t]));
+      for (const topic of topics) {
+        if (topic.articles.length === 0 && prevMap.has(topic.id)) {
+          const prev = prevMap.get(topic.id);
+          if (prev.articles?.length > 0) {
+            console.log(`    ${topic.id}: rate-limited — using ${prev.articles.length} cached articles from previous snapshot`);
+            topic.articles = prev.articles;
+            topic.fetchedAt = prev.fetchedAt;
+          }
+        }
+      }
+    }
+  }
+
   return { topics, fetchedAt: new Date().toISOString() };
 }
 
 function validate(data) {
   if (!Array.isArray(data?.topics) || data.topics.length === 0) return false;
   const populated = data.topics.filter((t) => Array.isArray(t.articles) && t.articles.length > 0);
-  return populated.length >= 2; // at least 2/4 topics must have articles; a partial write extends seed-meta TTL and prevents STALE
+  return populated.length >= 2; // safety net for first run or total outage; partial 429s are handled by per-topic merge above
 }
 
 runSeed('intelligence', 'gdelt-intel', CANONICAL_KEY, fetchAllTopics, {
