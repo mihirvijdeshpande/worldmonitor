@@ -2853,18 +2853,6 @@ function startServiceStatusesSeedLoop() {
 
 
 // ─────────────────────────────────────────────────────────────
-// Theater Posture Seed — fetches OpenSky directly via localhost
-// proxy, computes military postures, writes to Redis.
-// Eliminates circular dependency on Vercel RPC.
-// ─────────────────────────────────────────────────────────────
-const THEATER_POSTURE_SEED_INTERVAL_MS = 600_000; // 10 min
-const THEATER_POSTURE_LIVE_KEY = 'theater-posture:sebuf:v1';
-const THEATER_POSTURE_STALE_KEY = 'theater_posture:sebuf:stale:v1';
-const THEATER_POSTURE_BACKUP_KEY = 'theater-posture:sebuf:backup:v1';
-const THEATER_POSTURE_LIVE_TTL = 900;    // 15 min
-const THEATER_POSTURE_STALE_TTL = 86400; // 24h
-const THEATER_POSTURE_BACKUP_TTL = 604800; // 7d
-
 const THEATER_MIL_PREFIXES = [
   'RCH', 'REACH', 'MOOSE', 'EVAC', 'DUSTOFF', 'PEDRO',
   'DUKE', 'HAVOC', 'KNIFE', 'WARHAWK', 'VIPER', 'RAGE', 'FURY',
@@ -3119,6 +3107,7 @@ function startTheaterPostureSeedLoop() {
     }, THEATER_POSTURE_SEED_INTERVAL_MS).unref?.();
   }, 30_000);
 }
+
 
 // ─────────────────────────────────────────────────────────────
 // CII Risk Scores warm-ping — keeps RPC cache fresh so
@@ -4400,6 +4389,7 @@ function getRouteGroup(pathname) {
   if (pathname.startsWith('/opensky')) return 'opensky';
   if (pathname.startsWith('/rss')) return 'rss';
   if (pathname.startsWith('/ais/snapshot')) return 'snapshot';
+  if (pathname.startsWith('/ais/military-vessels')) return 'snapshot';
   if (pathname.startsWith('/worldbank')) return 'worldbank';
   if (pathname.startsWith('/polymarket')) return 'polymarket';
   if (pathname.startsWith('/ucdp-events')) return 'ucdp-events';
@@ -7081,6 +7071,17 @@ const server = http.createServer(async (req, res) => {
         'CDN-Cache-Control': 'public, max-age=10',
       }, JSON.stringify(payload));
     }
+  } else if (pathname.startsWith('/ais/military-vessels')) {
+    connectUpstream();
+    cleanupAggregates();
+    sendCompressed(req, res, 200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'public, max-age=2',
+      'CDN-Cache-Control': 'public, max-age=10',
+    }, JSON.stringify({
+      snapshotAt: Date.now(),
+      vessels: getRecentMilitaryVessels(),
+    }));
   } else if (pathname === '/opensky-reset') {
     openskyToken = null;
     openskyTokenExpiry = 0;
@@ -8105,8 +8106,6 @@ server.listen(PORT, () => {
   startPositiveEventsSeedLoop();
   startClassifySeedLoop();
   startServiceStatusesSeedLoop();
-  startTheaterPostureSeedLoop();
-
   startWeatherSeedLoop();
   startSpendingSeedLoop();
   startWorldBankSeedLoop();

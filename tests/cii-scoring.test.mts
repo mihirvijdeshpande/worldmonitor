@@ -25,9 +25,9 @@ function scoreFor(scores: ReturnType<typeof computeCIIScores>, code: string) {
 }
 
 describe('CII scoring', () => {
-  it('returns scores for all 31 tier-1 countries including MX, BR, AE, LB, IQ, AF', () => {
+  it('returns scores for all 32 tier-1 countries including MX, BR, AE, LB, IQ, AF, PS', () => {
     const scores = computeCIIScores([], emptyAux());
-    assert.equal(scores.length, 31);
+    assert.equal(scores.length, 32);
     assert.ok(scoreFor(scores, 'MX'), 'MX missing');
     assert.ok(scoreFor(scores, 'BR'), 'BR missing');
     assert.ok(scoreFor(scores, 'AE'), 'AE missing');
@@ -38,6 +38,7 @@ describe('CII scoring', () => {
     assert.ok(scoreFor(scores, 'EG'), 'EG missing');
     assert.ok(scoreFor(scores, 'JP'), 'JP missing');
     assert.ok(scoreFor(scores, 'QA'), 'QA missing');
+    assert.ok(scoreFor(scores, 'PS'), 'PS missing');
   });
 
   it('UCDP war floor: composite >= 70', () => {

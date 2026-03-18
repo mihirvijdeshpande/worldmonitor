@@ -22,7 +22,7 @@ export const TIER1_COUNTRIES: Record<string, string> = {
   PK: 'Pakistan', SY: 'Syria', YE: 'Yemen', MM: 'Myanmar', VE: 'Venezuela',
   CU: 'Cuba', MX: 'Mexico', BR: 'Brazil', AE: 'United Arab Emirates',
   KR: 'South Korea', IQ: 'Iraq', AF: 'Afghanistan', LB: 'Lebanon',
-  EG: 'Egypt', JP: 'Japan', QA: 'Qatar',
+  EG: 'Egypt', JP: 'Japan', QA: 'Qatar', PS: 'Palestine',
 };
 
 // ========================================================================
