@@ -18,4 +18,10 @@ export const intelligenceHandler: IntelligenceServiceHandler = {
   deductSituation,
   getCountryFacts,
   listSecurityAdvisories,
+  listSatellites: async (_ctx, _req) => ({ satellites: [] }),
+  listGpsInterference: async (_ctx, _req) => ({ observations: [], fetchedAt: '' }),
+  listOrefAlerts: async (_ctx, _req) => ({ alerts: [], fetchedAt: '' }),
+  listTelegramFeed: async (_ctx, _req) => ({ posts: [], fetchedAt: '' }),
+  getCompanyEnrichment: async (_ctx, _req) => ({ company: undefined }),
+  listCompanySignals: async (_ctx, _req) => ({ signals: [] }),
 };
