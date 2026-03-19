@@ -2,8 +2,14 @@ name: Typecheck
 
 on:
   pull_request:
+    paths-ignore:
+      - 'scripts/**'
+      - '.github/**'
   push:
     branches: [main]
+    paths-ignore:
+      - 'scripts/**'
+      - '.github/**'
 
 jobs:
   typecheck:
