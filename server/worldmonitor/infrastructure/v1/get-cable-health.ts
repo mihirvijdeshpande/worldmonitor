@@ -7,7 +7,7 @@ import type {
   CableHealthStatus,
 } from '../../../../src/generated/server/worldmonitor/infrastructure/v1/service_server';
 
-import { cachedFetchJson, cachedFetchJsonWithMeta, setCachedJson } from '../../../_shared/redis';
+import { cachedFetchJson, setCachedJson } from '../../../_shared/redis';
 import { UPSTREAM_TIMEOUT_MS } from './_shared';
 import { CHROME_UA } from '../../../_shared/constants';
 
@@ -168,17 +168,17 @@ interface Signal {
 // NGA fetch
 // ========================================================================
 
-async function fetchNgaWarnings(): Promise<NgaWarning[]> {
+async function fetchNgaWarnings(): Promise<NgaWarning[] | null> {
   try {
     const res = await fetch(
       'https://msi.nga.mil/api/publications/broadcast-warn?output=json&status=A',
       { headers: { 'User-Agent': CHROME_UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) },
     );
-    if (!res.ok) return [];
+    if (!res.ok) return null; // fetch failed — don't cache, let sentinel TTL govern retry
     const data = await res.json();
     return Array.isArray(data) ? data : (data as { warnings?: NgaWarning[] })?.warnings ?? [];
   } catch {
-    return [];
+    return null; // network error — don't poison NGA cache with empty data
   }
 }
 
@@ -427,10 +427,14 @@ export async function getCableHealth(
   _req: GetCableHealthRequest,
 ): Promise<GetCableHealthResponse> {
   try {
-    const { data: result } = await cachedFetchJsonWithMeta<GetCableHealthResponse>(CACHE_KEY, CACHE_TTL, async () => {
+    const result = await cachedFetchJson<GetCableHealthResponse>(CACHE_KEY, CACHE_TTL, async () => {
       // NGA raw warnings cached 24h — expensive upstream call, data stable between pings.
       // Computed response cached 30 min — recomputes recencyWeight decay on each warm-ping cycle.
-      const ngaData = await cachedFetchJson<NgaWarning[]>(NGA_CACHE_KEY, NGA_CACHE_TTL, fetchNgaWarnings) ?? [];
+      // null from fetchNgaWarnings = fetch failed; cachedFetchJson stores sentinel (2 min) and
+      // returns null here, which causes this outer fetcher to return null, leaving cable-health-v1
+      // untouched so the previous valid computed response is served from fallbackCache.
+      const ngaData = await cachedFetchJson<NgaWarning[]>(NGA_CACHE_KEY, NGA_CACHE_TTL, fetchNgaWarnings);
+      if (ngaData === null) return null;
       const signals = processNgaSignals(ngaData);
       const cables = computeHealthMap(signals);
 
