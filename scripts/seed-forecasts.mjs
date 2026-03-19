@@ -2552,7 +2552,7 @@ function finalizeSituationFamily(family) {
     tokens: family.tokens,
     situationCount: family.situationIds.length,
     forecastCount: family.forecastCount,
-    situationIds: family.situationIds.slice(0, 16),
+    situationIds: family.situationIds,
     avgProbability: +(family._probabilityTotal / Math.max(1, family.situationIds.length)).toFixed(3),
   };
 }
@@ -3122,10 +3122,13 @@ function buildSituationSimulationState(worldState, priorWorldState = null) {
       buildSimulationRound('round_3', situation, { actors, branches, counterEvidence, supportiveEvidence: supportingEvidence, priorSimulation }),
     ];
     const outcome = summarizeSimulationOutcome(rounds, situation.dominantDomain || situation.domains?.[0] || '');
-    const effectChannelCounts = pickTopCountEntries(
-      summarizeTypeCounts(rounds.flatMap((round) => (round.effectChannels || []).map((item) => item.type))),
-      6,
-    );
+    const effectChannelWeights = {};
+    for (const round of rounds) {
+      for (const item of round.effectChannels || []) {
+        effectChannelWeights[item.type] = (effectChannelWeights[item.type] || 0) + (item.count || 0);
+      }
+    }
+    const effectChannelCounts = pickTopCountEntries(effectChannelWeights, 6);
 
     return {
       situationId: situation.id,
@@ -4583,7 +4586,6 @@ function filterPublishedForecasts(predictions, minProbability = PUBLISH_MIN_PROB
   let overlapSuppressedCount = 0;
   let situationCapSuppressedCount = 0;
   let situationDomainCapSuppressedCount = 0;
-  let familyCapSuppressedCount = 0;
   const kept = [];
 
   for (const pred of predictions) {
@@ -4644,11 +4646,8 @@ function filterPublishedForecasts(predictions, minProbability = PUBLISH_MIN_PROB
   const published = [];
   const situationCounts = new Map();
   const situationDomainCounts = new Map();
-  const familyCounts = new Map();
-  const familyDomainCounts = new Map();
   for (const pred of kept) {
     const situationId = pred.situationContext?.id || '';
-    const familyId = pred.familyContext?.id || '';
     if (!situationId) {
       published.push(pred);
       continue;
@@ -4656,9 +4655,6 @@ function filterPublishedForecasts(predictions, minProbability = PUBLISH_MIN_PROB
     const totalCount = situationCounts.get(situationId) || 0;
     const domainKey = `${situationId}:${pred.domain}`;
     const domainCount = situationDomainCounts.get(domainKey) || 0;
-    const familyTotalCount = familyCounts.get(familyId) || 0;
-    const familyDomainKey = `${familyId}:${pred.domain}`;
-    const familyDomainCount = familyDomainCounts.get(familyDomainKey) || 0;
 
     if (domainCount >= MAX_PUBLISHED_FORECASTS_PER_SITUATION_DOMAIN) {
       situationDomainCapSuppressedCount++;
@@ -4667,17 +4663,6 @@ function filterPublishedForecasts(predictions, minProbability = PUBLISH_MIN_PROB
         situationId,
         domain: pred.domain,
         cap: MAX_PUBLISHED_FORECASTS_PER_SITUATION_DOMAIN,
-      };
-      continue;
-    }
-    if (familyId && familyDomainCount >= MAX_PUBLISHED_FORECASTS_PER_FAMILY_DOMAIN) {
-      familyCapSuppressedCount++;
-      pred.publishDiagnostics = {
-        reason: 'situation_family_cap',
-        situationId,
-        familyId,
-        domain: pred.domain,
-        cap: MAX_PUBLISHED_FORECASTS_PER_FAMILY_DOMAIN,
       };
       continue;
     }
@@ -4690,24 +4675,10 @@ function filterPublishedForecasts(predictions, minProbability = PUBLISH_MIN_PROB
       };
       continue;
     }
-    if (familyId && familyTotalCount >= MAX_PUBLISHED_FORECASTS_PER_FAMILY) {
-      familyCapSuppressedCount++;
-      pred.publishDiagnostics = {
-        reason: 'situation_family_cap',
-        situationId,
-        familyId,
-        cap: MAX_PUBLISHED_FORECASTS_PER_FAMILY,
-      };
-      continue;
-    }
 
     published.push(pred);
     situationCounts.set(situationId, totalCount + 1);
     situationDomainCounts.set(domainKey, domainCount + 1);
-    if (familyId) {
-      familyCounts.set(familyId, familyTotalCount + 1);
-      familyDomainCounts.set(familyDomainKey, familyDomainCount + 1);
-    }
   }
   if (weakFallbackCount > 0) {
     console.log(`  [filterPublished] Suppressed ${weakFallbackCount} weak fallback forecast(s)`);
@@ -4721,9 +4692,58 @@ function filterPublishedForecasts(predictions, minProbability = PUBLISH_MIN_PROB
   if (situationCapSuppressedCount > 0) {
     console.log(`  [filterPublished] Suppressed ${situationCapSuppressedCount} situation-cap forecast(s)`);
   }
+  return published;
+}
+
+function applySituationFamilyCaps(predictions, situationFamilies = []) {
+  let familyCapSuppressedCount = 0;
+  const published = [];
+  const familyCounts = new Map();
+  const familyDomainCounts = new Map();
+  const familyIndex = buildSituationFamilyIndex(situationFamilies);
+
+  for (const pred of predictions || []) {
+    const family = familyIndex.get(pred.situationContext?.id || '');
+    if (!family) {
+      published.push(pred);
+      continue;
+    }
+    const familyId = family.id;
+    const familyTotalCount = familyCounts.get(familyId) || 0;
+    const familyDomainKey = `${familyId}:${pred.domain}`;
+    const familyDomainCount = familyDomainCounts.get(familyDomainKey) || 0;
+
+    if (familyDomainCount >= MAX_PUBLISHED_FORECASTS_PER_FAMILY_DOMAIN) {
+      familyCapSuppressedCount++;
+      pred.publishDiagnostics = {
+        reason: 'situation_family_cap',
+        situationId: pred.situationContext?.id || '',
+        familyId,
+        domain: pred.domain,
+        cap: MAX_PUBLISHED_FORECASTS_PER_FAMILY_DOMAIN,
+      };
+      continue;
+    }
+    if (familyTotalCount >= MAX_PUBLISHED_FORECASTS_PER_FAMILY) {
+      familyCapSuppressedCount++;
+      pred.publishDiagnostics = {
+        reason: 'situation_family_cap',
+        situationId: pred.situationContext?.id || '',
+        familyId,
+        cap: MAX_PUBLISHED_FORECASTS_PER_FAMILY,
+      };
+      continue;
+    }
+
+    published.push(pred);
+    familyCounts.set(familyId, familyTotalCount + 1);
+    familyDomainCounts.set(familyDomainKey, familyDomainCount + 1);
+  }
+
   if (familyCapSuppressedCount > 0) {
     console.log(`  [filterPublished] Suppressed ${familyCapSuppressedCount} situation-family-cap forecast(s)`);
   }
+
   return published;
 }
 
@@ -5563,7 +5583,11 @@ async function fetchForecasts() {
   const enrichmentMeta = await enrichScenariosWithLLM(predictions);
   populateFallbackNarratives(predictions);
 
-  const publishedPredictions = filterPublishedForecasts(predictions);
+  const initiallyPublishedPredictions = filterPublishedForecasts(predictions);
+  const initiallyPublishedSituationClusters = projectSituationClusters(fullRunSituationClusters, initiallyPublishedPredictions);
+  attachSituationContext(initiallyPublishedPredictions, initiallyPublishedSituationClusters);
+  const initiallyPublishedSituationFamilies = attachSituationFamilyContext(initiallyPublishedPredictions, buildSituationFamilies(initiallyPublishedSituationClusters));
+  const publishedPredictions = applySituationFamilyCaps(initiallyPublishedPredictions, initiallyPublishedSituationFamilies);
   const publishTelemetry = summarizePublishFiltering(predictions);
   const publishedSituationClusters = projectSituationClusters(fullRunSituationClusters, publishedPredictions);
   attachSituationContext(publishedPredictions, publishedSituationClusters);
@@ -5755,6 +5779,7 @@ export {
   computeAnalysisPriority,
   rankForecastsForAnalysis,
   filterPublishedForecasts,
+  applySituationFamilyCaps,
   summarizePublishFiltering,
   selectForecastsForEnrichment,
   parseForecastProviderOrder,

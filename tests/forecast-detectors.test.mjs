@@ -51,6 +51,7 @@ import {
   computeAnalysisPriority,
   rankForecastsForAnalysis,
   filterPublishedForecasts,
+  applySituationFamilyCaps,
   selectForecastsForEnrichment,
   parseForecastProviderOrder,
   getForecastLlmCallOptions,
@@ -1967,8 +1968,20 @@ describe('forecast quality gating', () => {
       pred.analysisPriority = 0.24 - (index * 0.02);
     }
 
-    const familyA = { id: 'fam-middle-east', label: 'Middle East pressure family', situationCount: 4, forecastCount: 4 };
-    const familyB = { id: 'fam-brazil', label: 'Brazil pressure family', situationCount: 1, forecastCount: 1 };
+    const familyA = {
+      id: 'fam-middle-east',
+      label: 'Middle East pressure family',
+      situationCount: 5,
+      forecastCount: 5,
+      situationIds: ['sit-iran-conflict', 'sit-iran-political', 'sit-middleeast-market', 'sit-gulf-shipping', 'sit-iran-infra'],
+    };
+    const familyB = {
+      id: 'fam-brazil',
+      label: 'Brazil pressure family',
+      situationCount: 1,
+      forecastCount: 1,
+      situationIds: ['sit-brazil-conflict'],
+    };
     preds[0].situationContext = { id: 'sit-iran-conflict', label: 'Iran conflict situation', forecastCount: 1, topSignals: [{ type: 'ucdp', count: 1 }] };
     preds[1].situationContext = { id: 'sit-iran-political', label: 'Iran political situation', forecastCount: 1, topSignals: [{ type: 'news_corroboration', count: 1 }] };
     preds[2].situationContext = { id: 'sit-middleeast-market', label: 'Middle East market situation', forecastCount: 1, topSignals: [{ type: 'prediction_market', count: 1 }] };
@@ -1984,7 +1997,7 @@ describe('forecast quality gating', () => {
     preds[5].caseFile.situationContext = preds[5].situationContext;
     preds[5].caseFile.familyContext = familyB;
 
-    const published = filterPublishedForecasts(preds);
+    const published = applySituationFamilyCaps(preds, [familyA, familyB]);
     assert.equal(published.length, 5);
     assert.ok(published.some((item) => item.id === preds[5].id));
 
