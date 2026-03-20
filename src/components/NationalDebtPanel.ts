@@ -205,7 +205,7 @@ export class NationalDebtPanel extends Panel {
     const html = `
       <div class="debt-panel-container">
         <div class="debt-summary">
-          <div class="debt-summary-card debt-summary-card-deficit">
+          <div class="debt-summary-card debt-summary-card-deficit debt-summary-card-world">
             <span class="debt-summary-label">World Debt</span>
             <span class="debt-summary-value debt-global-ticker">${escapeHtml(formatDebt(this.getGlobalDebt()))}</span>
           </div>

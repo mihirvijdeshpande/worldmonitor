@@ -20281,10 +20281,14 @@ body.has-breaking-alert .panels-grid {
 
 .debt-summary {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr 1fr;
   gap: 6px;
   margin-bottom: 8px;
   flex-shrink: 0;
+}
+
+.debt-summary-card-world {
+  grid-column: 1 / -1;
 }
 
 .debt-summary-card {
