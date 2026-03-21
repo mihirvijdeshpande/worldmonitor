@@ -1,6 +1,18 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCallsign, toIataCallsign, icaoToIata } from '../server/_shared/airline-codes.ts';
+import { getWingbitsLiveFlight } from '../server/worldmonitor/military/v1/get-wingbits-live-flight.ts';
+
+const ECS_BASE = 'https://ecs-api.wingbits.com/v1/flights';
+const PHOTOS_BASE = 'https://api.planespotters.net/pub/photos/hex';
+const originalFetch = globalThis.fetch;
+
+function jsonResp(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
 
 describe('parseCallsign', () => {
   it('parses standard 3-letter ICAO prefix + number', () => {
@@ -87,5 +99,95 @@ describe('toIataCallsign', () => {
   it('returns null for empty or whitespace input', () => {
     assert.equal(toIataCallsign(''), null);
     assert.equal(toIataCallsign('   '), null);
+  });
+});
+
+describe('getWingbitsLiveFlight — IATA schedule fallback', () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('falls back to IATA callsign when ICAO schedule returns 404, populates airline fields', async () => {
+    const fetchedUrls = [];
+
+    globalThis.fetch = async (url) => {
+      const u = url.toString();
+      fetchedUrls.push(u);
+
+      // Live flight endpoint
+      if (u === `${ECS_BASE}/ae1234`) {
+        return jsonResp({
+          flight: { h: 'ae1234', f: 'UAE528', la: 25.2, lo: 55.3, ab: 35000, gs: 500, tr: 180, rs: 0, og: false, ra: '2024-01-01T12:00:00Z' },
+        });
+      }
+      // ICAO schedule — miss
+      if (u === `${ECS_BASE}/schedule/UAE528`) {
+        return new Response('Not Found', { status: 404 });
+      }
+      // IATA schedule fallback — hit
+      if (u === `${ECS_BASE}/schedule/EK528`) {
+        return jsonResp({
+          schedule: { depIata: 'DXB', arrIata: 'LHR', depTimeUtc: '2024-01-01T10:00:00Z', arrTimeUtc: '2024-01-01T18:00:00Z', status: 'en-route', duration: 480 },
+        });
+      }
+      // Photo — skip cleanly
+      if (u.startsWith(PHOTOS_BASE)) {
+        return new Response('Not Found', { status: 404 });
+      }
+      return new Response('Unexpected URL', { status: 500 });
+    };
+
+    const result = await getWingbitsLiveFlight({}, { icao24: 'ae1234' });
+
+    assert.ok(result.flight, 'flight should be present');
+    // Airline fields populated from ICAO→IATA lookup
+    assert.equal(result.flight.callsignIata, 'EK528');
+    assert.equal(result.flight.airlineName, 'Emirates');
+    // Schedule populated via IATA fallback
+    assert.equal(result.flight.depIata, 'DXB');
+    assert.equal(result.flight.arrIata, 'LHR');
+    assert.equal(result.flight.flightStatus, 'en-route');
+    assert.equal(result.flight.flightDurationMin, 480);
+    // IATA fallback URL was fetched (not just ICAO)
+    assert.ok(fetchedUrls.some(u => u.includes('/schedule/EK528')), 'should have fetched IATA schedule');
+    // Cache key uses ICAO callsign (uppercase), not IATA
+    assert.ok(fetchedUrls.some(u => u.includes('/schedule/UAE528')), 'should have tried ICAO schedule first');
+  });
+
+  it('uses ICAO schedule when available, skips IATA fallback', async () => {
+    const fetchedUrls = [];
+
+    globalThis.fetch = async (url) => {
+      const u = url.toString();
+      fetchedUrls.push(u);
+
+      if (u === `${ECS_BASE}/ae1234`) {
+        return jsonResp({
+          flight: { h: 'ae1234', f: 'UAE528', la: 25.2, lo: 55.3, ab: 35000, gs: 500, tr: 180, rs: 0, og: false, ra: '2024-01-01T12:00:00Z' },
+        });
+      }
+      if (u === `${ECS_BASE}/schedule/UAE528`) {
+        return jsonResp({ schedule: { depIata: 'DXB', arrIata: 'LHR', status: 'en-route', duration: 480 } });
+      }
+      if (u.startsWith(PHOTOS_BASE)) return new Response('Not Found', { status: 404 });
+      return new Response('Unexpected URL', { status: 500 });
+    };
+
+    const result = await getWingbitsLiveFlight({}, { icao24: 'ae1234' });
+
+    assert.ok(result.flight);
+    assert.equal(result.flight.depIata, 'DXB');
+    // IATA fallback should NOT have been fetched
+    assert.ok(!fetchedUrls.some(u => u.includes('/schedule/EK528')), 'should not fetch IATA schedule when ICAO succeeds');
+  });
+
+  it('returns no flight for unknown icao24', async () => {
+    const result = await getWingbitsLiveFlight({}, { icao24: '' });
+    assert.equal(result.flight, undefined);
+  });
+
+  it('returns no flight for invalid icao24 format', async () => {
+    const result = await getWingbitsLiveFlight({}, { icao24: 'ZZZZZZ' });
+    assert.equal(result.flight, undefined);
   });
 });
