@@ -317,7 +317,7 @@ export class App {
       panelSettings = loadFromStorage<Record<string, PanelConfig>>(STORAGE_KEYS.panels, {});
       const newVariantKeys = new Set(VARIANT_DEFAULTS[currentVariant] ?? []);
       for (const key of Object.keys(panelSettings)) {
-        if (!newVariantKeys.has(key) && panelSettings[key]) {
+        if (!newVariantKeys.has(key) && key !== 'runtime-config' && panelSettings[key]) {
           panelSettings[key] = { ...panelSettings[key]!, enabled: false };
         }
       }
@@ -386,7 +386,7 @@ export class App {
         const happyKeys = new Set(VARIANT_DEFAULTS['happy'] ?? []);
         let fixed = false;
         for (const key of Object.keys(panelSettings)) {
-          if (!happyKeys.has(key) && panelSettings[key]?.enabled) {
+          if (!happyKeys.has(key) && key !== 'runtime-config' && panelSettings[key]?.enabled) {
             panelSettings[key] = { ...panelSettings[key]!, enabled: false };
             fixed = true;
           }
@@ -485,11 +485,12 @@ export class App {
 
     // Desktop key management panel must always remain accessible in Tauri.
     if (isDesktopApp) {
-      if (!panelSettings['runtime-config']) {
+      if (!panelSettings['runtime-config'] || !panelSettings['runtime-config'].enabled) {
         panelSettings['runtime-config'] = {
-          name: 'Desktop Configuration',
+          ...panelSettings['runtime-config'],
+          name: panelSettings['runtime-config']?.name ?? 'Desktop Configuration',
           enabled: true,
-          priority: 2,
+          priority: panelSettings['runtime-config']?.priority ?? 2,
         };
         saveToStorage(STORAGE_KEYS.panels, panelSettings);
       }
