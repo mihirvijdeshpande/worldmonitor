@@ -22,6 +22,7 @@ import {
   EnergyComplexPanel,
   GdeltIntelPanel,
   LiveNewsPanel,
+  getDefaultLiveChannels,
   LiveWebcamsPanel,
   PinnedWebcamsPanel,
   CIIPanel,
@@ -787,7 +788,7 @@ export class PanelLayoutManager implements AppModule {
       this.ctx.panels['bigmac'] = new BigMacPanel();
     }
 
-    if (this.shouldCreatePanel('live-news')) {
+    if (this.shouldCreatePanel('live-news') && getDefaultLiveChannels().length > 0) {
       this.ctx.panels['live-news'] = new LiveNewsPanel();
     }
 
