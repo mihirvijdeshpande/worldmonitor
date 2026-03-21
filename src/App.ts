@@ -302,6 +302,9 @@ export class App {
     let mapLayers: MapLayers;
     let panelSettings: Record<string, PanelConfig>;
 
+    // Panels that must survive variant switches: desktop config, user-created widgets, MCP panels.
+    const isDynamicPanel = (k: string) => k === 'runtime-config' || k.startsWith('cw-') || k.startsWith('mcp-');
+
     // Check if variant changed - reset all settings to variant defaults
     const storedVariant = localStorage.getItem('worldmonitor-variant');
     const currentVariant = SITE_VARIANT;
@@ -317,7 +320,7 @@ export class App {
       panelSettings = loadFromStorage<Record<string, PanelConfig>>(STORAGE_KEYS.panels, {});
       const newVariantKeys = new Set(VARIANT_DEFAULTS[currentVariant] ?? []);
       for (const key of Object.keys(panelSettings)) {
-        if (!newVariantKeys.has(key) && key !== 'runtime-config' && panelSettings[key]) {
+        if (!newVariantKeys.has(key) && !isDynamicPanel(key) && panelSettings[key]) {
           panelSettings[key] = { ...panelSettings[key]!, enabled: false };
         }
       }
@@ -386,7 +389,7 @@ export class App {
         const happyKeys = new Set(VARIANT_DEFAULTS['happy'] ?? []);
         let fixed = false;
         for (const key of Object.keys(panelSettings)) {
-          if (!happyKeys.has(key) && key !== 'runtime-config' && panelSettings[key]?.enabled) {
+          if (!happyKeys.has(key) && !isDynamicPanel(key) && panelSettings[key]?.enabled) {
             panelSettings[key] = { ...panelSettings[key]!, enabled: false };
             fixed = true;
           }
