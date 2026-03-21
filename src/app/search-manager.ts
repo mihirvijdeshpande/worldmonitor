@@ -27,6 +27,7 @@ import { saveToStorage, setTheme } from '@/utils';
 import { CountryIntelManager } from '@/app/country-intel';
 import type { PositionSample } from '@/services/aviation';
 import type { MilitaryFlight } from '@/types';
+import { isProUser } from '@/services/widget-store';
 
 export interface SearchManagerCallbacks {
   openCountryBriefByCode: (code: string, country: string) => void;
@@ -533,7 +534,7 @@ export class SearchManager implements AppModule {
   }
 
   updateFlightSource(adsb: PositionSample[], military: MilitaryFlight[]): void {
-    if (!this.ctx.searchModal) return;
+    if (!this.ctx.searchModal || !isProUser()) return;
     const items = [
       ...adsb.map(p => ({
         id: p.icao24,
