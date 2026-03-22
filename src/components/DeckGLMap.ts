@@ -3933,8 +3933,6 @@ export class DeckGLMap {
       'earthquakes-layer': 'earthquake',
       'weather-layer': 'weather',
       'outages-layer': 'outage',
-      'traffic-anomalies-layer': 'outage',
-      'ddos-locations-layer': 'outage',
       'cyber-threats-layer': 'cyberThreat',
       'iran-events-layer': 'iranEvent',
       'protests-layer': 'protest',

@@ -27,7 +27,7 @@ export async function listInternetTrafficAnomalies(
       anomalies = anomalies.filter((a) => a.locationCode === target);
     }
 
-    return { anomalies, totalCount: data?.totalCount ?? anomalies.length };
+    return { anomalies, totalCount: anomalies.length };
   } catch {
     return { anomalies: [], totalCount: 0 };
   }

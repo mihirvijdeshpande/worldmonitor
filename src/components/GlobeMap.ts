@@ -48,6 +48,7 @@ import { isAllowedPreviewUrl } from '@/utils/imagery-preview';
 import { getCategoryStyle } from '@/services/webcams';
 import { pinWebcam, isPinned } from '@/services/webcams/pinned-store';
 import type { WebcamEntry, WebcamCluster } from '@/generated/client/worldmonitor/webcam/v1/service_client';
+import type { TrafficAnomaly as ProtoTrafficAnomaly, DdosLocationHit } from '@/generated/client/worldmonitor/infrastructure/v1/service_client';
 import type { RadiationObservation } from '@/services/radiation';
 
 const SAT_COUNTRY_COLORS: Record<string, string> = { CN: '#ff2020', RU: '#ff8800', US: '#4488ff', EU: '#44cc44', KR: '#aa66ff', IN: '#ff66aa', TR: '#ff4466', OTHER: '#ccccff' };
@@ -2857,7 +2858,7 @@ export class GlobeMap {
     this.flushMarkers();
   }
 
-  public setTrafficAnomalies(anomalies: import('@/generated/client/worldmonitor/infrastructure/v1/service_client').TrafficAnomaly[]): void {
+  public setTrafficAnomalies(anomalies: ProtoTrafficAnomaly[]): void {
     this.trafficAnomalyMarkers = (anomalies ?? [])
       .filter(a => a.latitude !== 0 || a.longitude !== 0)
       .map(a => ({
@@ -2871,7 +2872,7 @@ export class GlobeMap {
     this.flushMarkers();
   }
 
-  public setDdosLocations(hits: import('@/generated/client/worldmonitor/infrastructure/v1/service_client').DdosLocationHit[]): void {
+  public setDdosLocations(hits: DdosLocationHit[]): void {
     this.ddosMarkers = (hits ?? [])
       .filter(h => h.latitude !== 0 || h.longitude !== 0)
       .map(h => ({

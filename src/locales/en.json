@@ -343,6 +343,12 @@
     "producthunt": "Product Hunt",
     "events": "Tech Events",
     "serviceStatus": "Service Status",
+    "internetDisruptions": "Internet Disruptions",
+    "internetDisruptionsTabs": {
+      "outages": "Outages",
+      "ddos": "DDoS",
+      "anomalies": "Anomalies"
+    },
     "techReadiness": "Tech Readiness Index",
     "gccInvestments": "GCC Investments",
     "geoHubs": "Geopolitical Hubs",
@@ -1851,6 +1857,14 @@
     "languageSelector": {
       "selectLanguage": "Select Language",
       "mapLabelsFallbackVi": "Map labels currently fall back to English for Vietnamese."
+    },
+    "internetDisruptions": {
+      "noOutages": "No active outages detected",
+      "noDdos": "No DDoS data available",
+      "noAnomalies": "No traffic anomalies detected",
+      "byProtocol": "Attack Protocol",
+      "byVector": "Attack Vector",
+      "topTargets": "Top Target Countries"
     },
     "serviceStatus": {
       "checkingServices": "Checking services...",

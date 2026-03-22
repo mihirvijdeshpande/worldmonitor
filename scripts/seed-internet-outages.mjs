@@ -154,7 +154,7 @@ async function fetchDdosData(token) {
     const coords = COUNTRY_COORDS[code] || null;
     return {
       countryCode: code,
-      countryName: '',
+      countryName: item.clientCountryName || code,
       percentage: parseFloat(item.value) || 0,
       latitude: coords ? coords[0] : 0,
       longitude: coords ? coords[1] : 0,
@@ -171,11 +171,6 @@ async function fetchDdosData(token) {
   };
 }
 
-function toEpochMsFromIso(value) {
-  if (!value) return 0;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? 0 : d.getTime();
-}
 
 async function fetchTrafficAnomalies(token) {
   const headers = {
@@ -198,8 +193,8 @@ async function fetchTrafficAnomalies(token) {
       uuid: item.uuid || '',
       type: item.type || '',
       status: item.status || '',
-      startDate: toEpochMsFromIso(item.startDate),
-      endDate: toEpochMsFromIso(item.endDate),
+      startDate: toEpochMs(item.startDate),
+      endDate: toEpochMs(item.endDate),
       asn: item.asnDetails?.asn ? String(item.asnDetails.asn) : '',
       asnName: item.asnDetails?.name || '',
       locationCode: item.locationDetails?.code || '',
@@ -233,7 +228,7 @@ async function fetchAll() {
   if (ddos && (ddos.protocol.length > 0 || ddos.vector.length > 0)) {
     await writeExtraKeyWithMeta(DDOS_KEY, ddos, DDOS_TTL, ddos.protocol.length + ddos.vector.length);
   }
-  if (anomalies && anomalies.anomalies.length >= 0) {
+  if (anomalies && anomalies.anomalies.length > 0) {
     await writeExtraKeyWithMeta(TRAFFIC_ANOMALIES_KEY, anomalies, ANOMALIES_TTL, anomalies.totalCount);
   }
 
