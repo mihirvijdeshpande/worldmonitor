@@ -1,0 +1,102 @@
+/**
+ * Lightweight geopolitical keyword → ISO2 extractor.
+ * Uses country-names.json as the base, extended with common city/region aliases
+ * and short-form geopolitical names that appear frequently in news headlines.
+ */
+
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const require = createRequire(import.meta.url);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const countryNames = require(join(__dirname, 'country-names.json'));
+
+// City/region/capital aliases → ISO2 not covered by country-names.json
+const ALIAS_MAP = {
+  // Major capitals and common short forms
+  'moscow': 'RU', 'kremlin': 'RU', 'russian': 'RU',
+  'beijing': 'CN', 'chinese': 'CN', 'prc': 'CN',
+  'washington': 'US', 'american': 'US', 'pentagon': 'US',
+  'kyiv': 'UA', 'ukrainian': 'UA',
+  'tehran': 'IR', 'iranian': 'IR',
+  'pyongyang': 'KP', 'north korean': 'KP',
+  'taipei': 'TW', 'taiwanese': 'TW',
+  'riyadh': 'SA', 'saudi': 'SA',
+  'tel aviv': 'IL', 'israeli': 'IL',
+  'gaza': 'PS', 'west bank': 'PS', 'palestinian': 'PS',
+  'damascus': 'SY', 'syrian': 'SY',
+  'kabul': 'AF', 'afghan': 'AF',
+  'islamabad': 'PK', 'pakistani': 'PK',
+  'new delhi': 'IN', 'indian': 'IN',
+  'ankara': 'TR', 'turkish': 'TR',
+  'berlin': 'DE', 'german': 'DE',
+  'paris': 'FR', 'french': 'FR',
+  'london': 'GB', 'british': 'GB', 'uk': 'GB',
+  'tokyo': 'JP', 'japanese': 'JP',
+  'seoul': 'KR', 'south korean': 'KR',
+  'manila': 'PH', 'philippine': 'PH',
+  'hanoi': 'VN', 'vietnamese': 'VN',
+  'caracas': 'VE', 'venezuelan': 'VE',
+  'havana': 'CU', 'cuban': 'CU',
+  'minsk': 'BY', 'belarusian': 'BY',
+  'belgrade': 'RS', 'serbian': 'RS',
+  'warsaw': 'PL', 'polish': 'PL',
+  'budapest': 'HU', 'hungarian': 'HU',
+  'prague': 'CZ', 'czech': 'CZ',
+  'baghdad': 'IQ', 'iraqi': 'IQ',
+  'sanaa': 'YE', 'yemeni': 'YE',
+  'tripoli': 'LY', 'libyan': 'LY',
+  'khartoum': 'SD', 'sudanese': 'SD',
+  'addis ababa': 'ET', 'ethiopian': 'ET',
+  'nairobi': 'KE', 'kenyan': 'KE',
+  'lagos': 'NG', 'nigerian': 'NG',
+  'pretoria': 'ZA', 'south african': 'ZA',
+  'brasilia': 'BR', 'brazilian': 'BR',
+  'bogota': 'CO', 'colombian': 'CO',
+  'buenos aires': 'AR', 'argentine': 'AR',
+  'lima': 'PE', 'peruvian': 'PE',
+  'mexico city': 'MX', 'mexican': 'MX',
+  'ottawa': 'CA', 'canadian': 'CA',
+  'canberra': 'AU', 'australian': 'AU',
+  // Geo regions / alliances used in headlines
+  'nato': 'XX', // multi-country, use special marker
+  'eu': 'EU',
+  'europe': 'EU',
+  'ukraine': 'UA',
+  'taiwan': 'TW',
+};
+
+// Build a merged lookup (alias map takes precedence over country-names.json)
+const LOOKUP = {};
+for (const [name, iso2] of Object.entries(countryNames)) {
+  LOOKUP[name.toLowerCase()] = iso2;
+}
+for (const [alias, iso2] of Object.entries(ALIAS_MAP)) {
+  LOOKUP[alias.toLowerCase()] = iso2;
+}
+
+/**
+ * Extract the first matching ISO2 country code from a text string.
+ * Returns null if no match found.
+ * @param {string} text
+ * @returns {string|null}
+ */
+export function extractCountryCode(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+
+  // Try longest-match first (2-word then 1-word phrases)
+  const words = lower.split(/\s+/);
+  for (let i = 0; i < words.length - 1; i++) {
+    const bigram = `${words[i]} ${words[i + 1]}`;
+    if (LOOKUP[bigram] && LOOKUP[bigram] !== 'XX') return LOOKUP[bigram];
+  }
+  for (const word of words) {
+    const clean = word.replace(/[^a-z]/g, '');
+    if (clean.length < 2) continue;
+    if (LOOKUP[clean] && LOOKUP[clean] !== 'XX') return LOOKUP[clean];
+  }
+  return null;
+}
