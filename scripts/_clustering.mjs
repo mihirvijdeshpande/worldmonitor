@@ -120,6 +120,8 @@ export function clusterItems(items) {
     });
 
     const primary = sorted[0];
+    // Prefer a threat from any item in the group (digest items may carry AI-classified threat)
+    const threatItem = group.find(i => i.threat?.level && i.threat?.source !== 'keyword');
     return {
       primaryTitle: primary.title,
       primarySource: primary.source,
@@ -127,6 +129,7 @@ export function clusterItems(items) {
       pubDate: primary.pubDate,
       sourceCount: group.length,
       isAlert: group.some(i => i.isAlert),
+      threat: threatItem?.threat ?? primary.threat,
     };
   });
 }
