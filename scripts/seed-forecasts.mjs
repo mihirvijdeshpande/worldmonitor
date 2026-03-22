@@ -1685,7 +1685,28 @@ const CRITICAL_NEWS_REFINERY_RE = /\b(refiner(?:y|ies)|petrochemical|fuel depot|
 const CRITICAL_NEWS_SANCTIONS_RE = /\b(sanction(?:s|ing|ed)?|embargo|export control|blacklist|freeze(?:d)? assets|price cap|trade ban|shipping ban)\b/i;
 const CRITICAL_NEWS_ULTIMATUM_RE = /\b(ultimatum|deadline|final warning|48-hour|72-hour|must reopen|must withdraw|or face)\b/i;
 const CRITICAL_NEWS_POWER_RE = /\b(power station|power plant|grid|substation|electricity|blackout)\b/i;
-const CRITICAL_NEWS_SOURCE_TYPES = new Set(['critical_news', 'iran_events', 'sanctions_pressure', 'thermal_escalation']);
+const CRITICAL_NEWS_SOURCE_TYPES = new Set(['critical_news', 'critical_news_llm', 'iran_events', 'sanctions_pressure', 'thermal_escalation']);
+const CRITICAL_SIGNAL_LLM_MAX_ITEMS = 8;
+const CRITICAL_SIGNAL_CACHE_TTL_SECONDS = 20 * 60;
+const CRITICAL_SIGNAL_PRIMARY_KINDS = new Set([
+  'route_blockage',
+  'facility_attack',
+  'export_disruption',
+  'sanctions_escalation',
+  'ultimatum_escalation',
+  'power_disruption',
+  'policy_intervention',
+  'other',
+]);
+const CRITICAL_SIGNAL_IMPACT_HINTS = new Set([
+  'shipping',
+  'energy',
+  'gas_lng',
+  'refined_products',
+  'sovereign',
+  'infrastructure',
+  'rates_policy',
+]);
 const CRITICAL_NEWS_GEO_HINTS = [
   { pattern: /\b(hormuz|strait of hormuz|persian gulf|gulf of oman|qatar|doha|ras laffan|south pars|north field|asaluyeh|bahrain|kuwait|uae|abu dhabi|dubai|fujairah|oman|saudi|riyadh|iraq|iran|israel|gaza|lebanon|syria|yemen)\b/i, region: 'Middle East', macroRegion: 'MENA' },
   { pattern: /\b(red sea|bab el[- ]mandeb|suez)\b/i, region: 'Red Sea', macroRegion: 'MENA' },
@@ -1714,6 +1735,36 @@ function getCriticalThreatWeight(level) {
     default: return 0.08;
   }
 }
+
+const CRITICAL_SIGNAL_SYSTEM_PROMPT = `You extract urgent world-state event frames for simulation input.
+
+Return ONLY a JSON array.
+
+Each item must be:
+{
+  "index": number,
+  "primaryKind": "route_blockage" | "facility_attack" | "export_disruption" | "sanctions_escalation" | "ultimatum_escalation" | "power_disruption" | "policy_intervention" | "other",
+  "impactHints": string[],
+  "region": string,
+  "macroRegion": string,
+  "route": string,
+  "facility": string,
+  "commodity": string,
+  "actor": string,
+  "strength": number,
+  "confidence": number,
+  "evidence": string[],
+  "summary": string
+}
+
+Rules:
+- Only emit frames for urgent, state-changing items.
+- Prefer omission over weak guesses.
+- Keep strength and confidence between 0 and 1.
+- Use impactHints only from: shipping, energy, gas_lng, refined_products, sovereign, infrastructure, rates_policy.
+- Keep evidence concise and grounded in the input item.
+- If the item is not materially state-changing, omit it.
+- Do not add prose outside the JSON array.`;
 
 function inferCriticalSignalGeo(text, fallbackRegion = '') {
   for (const hint of CRITICAL_NEWS_GEO_HINTS) {
@@ -1887,13 +1938,284 @@ function addCriticalSignalsFromTextItem(signals, item, sourceType = 'critical_ne
   }
 }
 
-function extractCriticalNewsSignals(inputs) {
-  const signals = [];
+function scoreCriticalNewsCandidate(item) {
+  const text = `${item?.title || ''} ${item?.summary || ''}`.trim();
+  const threatLevel = normalizeCriticalThreatLevel(item?.threatLevel, text);
+  const threatWeight = getCriticalThreatWeight(threatLevel);
+  const hasRoute = CRITICAL_NEWS_ROUTE_RE.test(text);
+  const hasBlockage = CRITICAL_NEWS_BLOCKAGE_RE.test(text);
+  const hasAttack = CRITICAL_NEWS_ATTACK_RE.test(text);
+  const hasEnergy = CRITICAL_NEWS_ENERGY_RE.test(text);
+  const hasLng = CRITICAL_NEWS_LNG_RE.test(text);
+  const hasRefinery = CRITICAL_NEWS_REFINERY_RE.test(text);
+  const hasSanctions = CRITICAL_NEWS_SANCTIONS_RE.test(text);
+  const hasUltimatum = CRITICAL_NEWS_ULTIMATUM_RE.test(text);
+  const hasPower = CRITICAL_NEWS_POWER_RE.test(text);
+  const { region, macroRegion } = inferCriticalSignalGeo(text, '');
+  const tags = [];
+  let score = 0.16 + threatWeight;
 
-  for (const item of extractNewsClusterItems(inputs?.newsInsights, inputs?.newsDigest)) {
-    addCriticalSignalsFromTextItem(signals, item, 'critical_news');
+  if (item?.isAlert) score += 0.18;
+  score += Math.min(0.16, Math.max(0, (Number(item?.sourceCount || 1) - 1) * 0.04));
+
+  if (hasRoute) { score += 0.08; tags.push('route'); }
+  if (hasBlockage) { score += 0.12; tags.push('blockage'); }
+  if (hasAttack) { score += 0.12; tags.push('attack'); }
+  if (hasEnergy) { score += 0.1; tags.push('energy'); }
+  if (hasLng) { score += 0.08; tags.push('gas_lng'); }
+  if (hasRefinery) { score += 0.06; tags.push('refinery'); }
+  if (hasSanctions) { score += 0.08; tags.push('sanctions'); }
+  if (hasUltimatum) { score += 0.08; tags.push('ultimatum'); }
+  if (hasPower) { score += 0.06; tags.push('power'); }
+  if (hasRoute && (hasBlockage || hasAttack || hasUltimatum)) score += 0.12;
+  if (hasAttack && hasEnergy) score += 0.12;
+
+  return {
+    urgentScore: +clampUnitInterval(score).toFixed(3),
+    regionHint: region,
+    macroRegionHint: macroRegion,
+    triageTags: uniqueSortedStrings(tags),
+    isUrgent: clampUnitInterval(score) >= 0.58
+      || (Boolean(item?.isAlert) && (hasRoute || hasEnergy || hasSanctions || hasPower || hasAttack)),
+  };
+}
+
+function selectUrgentCriticalNewsCandidates(inputs, limit = CRITICAL_SIGNAL_LLM_MAX_ITEMS) {
+  return extractNewsClusterItems(inputs?.newsInsights, inputs?.newsDigest)
+    .map((item, candidateIndex) => {
+      const scored = scoreCriticalNewsCandidate(item);
+      return {
+        ...item,
+        candidateIndex,
+        urgentScore: scored.urgentScore,
+        regionHint: scored.regionHint,
+        macroRegionHint: scored.macroRegionHint,
+        triageTags: scored.triageTags,
+        isUrgent: scored.isUrgent,
+      };
+    })
+    .filter((item) => item.isUrgent)
+    .sort((a, b) =>
+      b.urgentScore - a.urgentScore
+      || Number(b.isAlert) - Number(a.isAlert)
+      || (b.sourceCount || 0) - (a.sourceCount || 0)
+      || a.title.localeCompare(b.title))
+    .slice(0, limit);
+}
+
+function buildCriticalSignalCandidateHash(candidates = []) {
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(candidates.map((item) => ({
+      i: item.candidateIndex,
+      t: item.title,
+      s: item.summary,
+      tl: item.threatLevel,
+      sc: item.sourceCount,
+      a: !!item.isAlert,
+      u: item.urgentScore,
+      tags: item.triageTags || [],
+    }))))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+function buildCriticalSignalUserPrompt(candidates = []) {
+  return `Urgent news candidates to classify into event frames:
+
+${candidates.map((item) => {
+  const parts = [
+    `[${item.candidateIndex}] threat=${item.threatLevel} alert=${item.isAlert ? 'yes' : 'no'} sources=${item.sourceCount || 1} score=${item.urgentScore}`,
+    item.regionHint ? `region_hint=${item.regionHint}` : '',
+    item.triageTags?.length ? `tags=${item.triageTags.join(',')}` : '',
+    `Title: ${sanitizeForPrompt(item.title)}`,
+    item.summary ? `Summary: ${sanitizeForPrompt(item.summary)}` : '',
+  ].filter(Boolean);
+  return parts.join('\n');
+}).join('\n\n')}`;
+}
+
+function normalizeCriticalSignalImpactHints(hints) {
+  const values = Array.isArray(hints) ? hints : [hints];
+  const aliasMap = {
+    gas: 'gas_lng',
+    lng: 'gas_lng',
+    gas_lng: 'gas_lng',
+    refined: 'refined_products',
+    refinery: 'refined_products',
+    refined_products: 'refined_products',
+    sovereign: 'sovereign',
+    sovereign_risk: 'sovereign',
+    infrastructure: 'infrastructure',
+    infra: 'infrastructure',
+    energy: 'energy',
+    shipping: 'shipping',
+    route: 'shipping',
+    rates: 'rates_policy',
+    policy: 'rates_policy',
+    rates_policy: 'rates_policy',
+  };
+  return uniqueSortedStrings(
+    values
+      .map((value) => aliasMap[String(value || '').trim().toLowerCase()] || String(value || '').trim().toLowerCase())
+      .filter((value) => CRITICAL_SIGNAL_IMPACT_HINTS.has(value))
+  );
+}
+
+function validateCriticalSignalFrames(items, candidates = []) {
+  if (!Array.isArray(items)) return [];
+  const candidateMap = new Map(candidates.map((item) => [item.candidateIndex, item]));
+  const seen = new Set();
+  const valid = [];
+  for (const item of items) {
+    const index = Number(item?.index);
+    if (!Number.isInteger(index) || !candidateMap.has(index) || seen.has(index)) continue;
+    const primaryKind = String(item?.primaryKind || '').trim().toLowerCase();
+    if (!CRITICAL_SIGNAL_PRIMARY_KINDS.has(primaryKind)) continue;
+    const impactHints = normalizeCriticalSignalImpactHints(item?.impactHints);
+    const strength = clampUnitInterval(Number(item?.strength ?? 0));
+    const confidence = clampUnitInterval(Number(item?.confidence ?? 0));
+    if ((strength <= 0 && confidence <= 0) || (impactHints.length === 0 && primaryKind === 'other')) continue;
+    valid.push({
+      index,
+      primaryKind,
+      impactHints,
+      region: String(item?.region || '').trim(),
+      macroRegion: String(item?.macroRegion || '').trim(),
+      route: String(item?.route || '').trim(),
+      facility: String(item?.facility || '').trim(),
+      commodity: String(item?.commodity || '').trim(),
+      actor: String(item?.actor || '').trim(),
+      strength,
+      confidence,
+      evidence: Array.isArray(item?.evidence)
+        ? item.evidence.map((entry) => sanitizeForPrompt(String(entry || ''))).filter(Boolean).slice(0, 3)
+        : [],
+      summary: sanitizeForPrompt(String(item?.summary || '')).slice(0, 220),
+    });
+    seen.add(index);
+  }
+  return valid;
+}
+
+function mapCriticalSignalFrameToSignals(frame, candidate) {
+  const signals = [];
+  const text = `${candidate?.title || ''} ${candidate?.summary || ''}`.trim();
+  const inferredGeo = inferCriticalSignalGeo(text, candidate?.regionHint || '');
+  const region = frame.region || candidate?.regionHint || inferredGeo.region || '';
+  const macroRegion = frame.macroRegion || candidate?.macroRegionHint || inferredGeo.macroRegion || getMacroRegion([region]) || '';
+  const baseStrength = clampUnitInterval(Number(frame.strength || candidate?.urgentScore || 0.6));
+  const baseConfidence = clampUnitInterval(Number(frame.confidence || Math.max(0.58, candidate?.urgentScore || 0)));
+  const impactHints = new Set(frame.impactHints || []);
+  const commodity = `${frame.commodity || ''} ${text}`.toLowerCase();
+  const routeLabel = frame.route || region || 'Critical route';
+  const facilityLabel = frame.facility || region || 'Critical asset';
+  const support = buildCriticalSignalSupport(candidate, mergeSignalLists(
+    [frame.summary, ...frame.evidence],
+    [frame.route || '', frame.facility || '', frame.commodity || '', frame.actor || ''],
+    3,
+  ));
+
+  if (frame.primaryKind === 'route_blockage' || impactHints.has('shipping')) {
+    pushCriticalSignal(signals, 'shipping_cost_shock', 'critical_news_llm', `${routeLabel} disruption pressure`, {
+      sourceKey: `critical_news_llm:${candidate?.sourceKey || routeLabel}:route_disruption`,
+      region,
+      macroRegion,
+      strength: baseStrength + 0.08,
+      confidence: baseConfidence,
+      domains: ['supply_chain', 'market'],
+      supportingEvidence: support,
+    });
   }
 
+  if (
+    impactHints.has('energy')
+    || frame.primaryKind === 'facility_attack'
+    || frame.primaryKind === 'export_disruption'
+    || (frame.primaryKind === 'route_blockage' && /\b(oil|crude|tanker|gulf|energy)\b/i.test(commodity))
+  ) {
+    pushCriticalSignal(signals, 'energy_supply_shock', 'critical_news_llm', `${facilityLabel} energy infrastructure stress`, {
+      sourceKey: `critical_news_llm:${candidate?.sourceKey || facilityLabel}:energy_asset`,
+      region,
+      macroRegion,
+      strength: baseStrength + 0.12,
+      confidence: baseConfidence + 0.04,
+      domains: ['market', 'infrastructure'],
+      supportingEvidence: support,
+    });
+  }
+
+  if (impactHints.has('gas_lng') || /\b(lng|gas|north field|south pars|ras laffan)\b/i.test(commodity)) {
+    pushCriticalSignal(signals, 'gas_supply_stress', 'critical_news_llm', `${facilityLabel} LNG and gas export stress`, {
+      sourceKey: `critical_news_llm:${candidate?.sourceKey || facilityLabel}:lng_export`,
+      region,
+      macroRegion,
+      strength: baseStrength + 0.14,
+      confidence: baseConfidence + 0.05,
+      domains: ['market', 'supply_chain'],
+      supportingEvidence: support,
+    });
+  }
+
+  if (impactHints.has('refined_products') || /\b(refinery|petrochemical|fuel depot|tank farm|storage tank)\b/i.test(commodity)) {
+    pushCriticalSignal(signals, 'commodity_repricing', 'critical_news_llm', `${facilityLabel} refined-product repricing risk`, {
+      sourceKey: `critical_news_llm:${candidate?.sourceKey || facilityLabel}:refinery_damage`,
+      region,
+      macroRegion,
+      strength: baseStrength + 0.06,
+      confidence: baseConfidence,
+      domains: ['market'],
+      supportingEvidence: support,
+    });
+  }
+
+  if (
+    frame.primaryKind === 'sanctions_escalation'
+    || frame.primaryKind === 'ultimatum_escalation'
+    || impactHints.has('sovereign')
+  ) {
+    const sovereignLabel = frame.primaryKind === 'ultimatum_escalation'
+      ? `${region || 'Flashpoint'} deadline pressure is escalating`
+      : `${region || 'Targeted region'} sanctions pressure is intensifying`;
+    pushCriticalSignal(signals, 'sovereign_stress', 'critical_news_llm', sovereignLabel, {
+      sourceKey: `critical_news_llm:${candidate?.sourceKey || region || 'global'}:sovereign`,
+      region,
+      macroRegion,
+      strength: baseStrength,
+      confidence: baseConfidence,
+      domains: ['market', 'political', ...(frame.primaryKind === 'ultimatum_escalation' ? ['conflict'] : [])],
+      supportingEvidence: support,
+    });
+  }
+
+  if (frame.primaryKind === 'power_disruption' || impactHints.has('infrastructure')) {
+    pushCriticalSignal(signals, 'infrastructure_capacity_loss', 'critical_news_llm', `${facilityLabel} infrastructure capacity is under pressure`, {
+      sourceKey: `critical_news_llm:${candidate?.sourceKey || facilityLabel}:power_infra`,
+      region,
+      macroRegion,
+      strength: baseStrength,
+      confidence: baseConfidence - 0.02,
+      domains: ['infrastructure', 'market'],
+      supportingEvidence: support,
+    });
+  }
+
+  if (frame.primaryKind === 'policy_intervention' || impactHints.has('rates_policy')) {
+    pushCriticalSignal(signals, 'policy_rate_pressure', 'critical_news_llm', `${region || 'Policy center'} emergency policy pressure is building`, {
+      sourceKey: `critical_news_llm:${candidate?.sourceKey || region || 'global'}:policy`,
+      region,
+      macroRegion,
+      strength: baseStrength - 0.04,
+      confidence: baseConfidence - 0.02,
+      domains: ['market', 'political'],
+      supportingEvidence: support,
+    });
+  }
+
+  return signals;
+}
+
+function extractIranEventCriticalSignals(inputs) {
+  const signals = [];
   const iranEvents = Array.isArray(inputs?.iranEvents) ? inputs.iranEvents : inputs?.iranEvents?.events || [];
   for (const event of iranEvents.slice(0, 40)) {
     if (!['high', 'critical'].includes(normalizeCriticalThreatLevel(event?.severity, event?.title))) continue;
@@ -1905,7 +2227,11 @@ function extractCriticalNewsSignals(inputs) {
       isAlert: String(event?.severity || '').toLowerCase() === 'critical',
     }, 'iran_events', inferCriticalSignalGeo(String(event?.locationName || '')).region || 'Middle East');
   }
+  return signals;
+}
 
+function extractSanctionsCountrySignals(inputs) {
+  const signals = [];
   const sanctionsCountries = Array.isArray(inputs?.sanctionsPressure?.countries) ? inputs.sanctionsPressure.countries : [];
   for (const country of sanctionsCountries.slice(0, 10)) {
     if (Number(country?.newEntryCount || 0) <= 0 && Number(country?.entryCount || 0) < 8) continue;
@@ -1935,7 +2261,11 @@ function extractCriticalNewsSignals(inputs) {
       });
     }
   }
+  return signals;
+}
 
+function extractSanctionsEntrySignals(inputs) {
+  const signals = [];
   const sanctionsEntries = Array.isArray(inputs?.sanctionsPressure?.entries) ? inputs.sanctionsPressure.entries : [];
   for (const entry of sanctionsEntries.slice(0, 12)) {
     if (!entry?.isNew) continue;
@@ -1947,7 +2277,11 @@ function extractCriticalNewsSignals(inputs) {
       isAlert: false,
     }, 'sanctions_pressure', entry?.countryNames?.[0] || entry?.countryCodes?.[0] || '');
   }
+  return signals;
+}
 
+function extractThermalCriticalSignals(inputs) {
+  const signals = [];
   const thermalClusters = Array.isArray(inputs?.thermalEscalation?.clusters) ? inputs.thermalEscalation.clusters : [];
   for (const cluster of thermalClusters.slice(0, 12)) {
     const highRelevance = cluster?.strategicRelevance === 'THERMAL_RELEVANCE_HIGH';
@@ -1979,8 +2313,140 @@ function extractCriticalNewsSignals(inputs) {
       });
     }
   }
-
   return signals;
+}
+
+function extractStructuredCriticalSignals(inputs) {
+  return [
+    ...extractIranEventCriticalSignals(inputs),
+    ...extractSanctionsCountrySignals(inputs),
+    ...extractSanctionsEntrySignals(inputs),
+    ...extractThermalCriticalSignals(inputs),
+  ];
+}
+
+function extractRegexCriticalNewsSignals(inputs, candidateItems = null) {
+  const signals = [];
+  const items = Array.isArray(candidateItems) ? candidateItems : extractNewsClusterItems(inputs?.newsInsights, inputs?.newsDigest);
+  for (const item of items) {
+    addCriticalSignalsFromTextItem(signals, item, 'critical_news');
+  }
+  return signals;
+}
+
+async function extractCriticalSignalBundle(inputs) {
+  const structuredSignals = extractStructuredCriticalSignals(inputs);
+  const candidates = selectUrgentCriticalNewsCandidates(inputs);
+  const candidateSummary = candidates.map((item) => ({
+    index: item.candidateIndex,
+    title: item.title,
+    threatLevel: item.threatLevel,
+    sourceCount: item.sourceCount || 1,
+    isAlert: !!item.isAlert,
+    urgentScore: item.urgentScore,
+    regionHint: item.regionHint || '',
+    triageTags: item.triageTags || [],
+  }));
+
+  const bundle = {
+    source: 'deterministic_only',
+    provider: '',
+    model: '',
+    parseStage: '',
+    rawPreview: '',
+    failureReason: '',
+    candidateCount: candidates.length,
+    extractedFrameCount: 0,
+    mappedSignalCount: 0,
+    fallbackNewsSignalCount: 0,
+    structuredSignalCount: structuredSignals.length,
+    candidates: candidateSummary,
+    signals: structuredSignals,
+  };
+
+  if (candidates.length === 0) return bundle;
+
+  const { url, token } = getRedisCredentials();
+  const cacheKey = `forecast:critical-signals:llm:${buildCriticalSignalCandidateHash(candidates)}`;
+  const fallbackSignalsFromCandidates = (coveredIndexes = new Set()) =>
+    extractRegexCriticalNewsSignals(inputs, candidates.filter((item) => !coveredIndexes.has(item.candidateIndex)));
+
+  const applyFrames = (frames) => {
+    const coveredIndexes = new Set();
+    const llmSignals = [];
+    for (const frame of frames) {
+      const candidate = candidates.find((item) => item.candidateIndex === frame.index);
+      if (!candidate) continue;
+      coveredIndexes.add(frame.index);
+      llmSignals.push(...mapCriticalSignalFrameToSignals(frame, candidate));
+    }
+    const fallbackSignals = fallbackSignalsFromCandidates(coveredIndexes);
+    bundle.extractedFrameCount = frames.length;
+    bundle.mappedSignalCount = llmSignals.length;
+    bundle.fallbackNewsSignalCount = fallbackSignals.length;
+    bundle.signals = [...llmSignals, ...fallbackSignals, ...structuredSignals];
+  };
+
+  const cached = await redisGet(url, token, cacheKey);
+  if (Array.isArray(cached?.frames)) {
+    const validFrames = validateCriticalSignalFrames(cached.frames, candidates);
+    if (validFrames.length > 0) {
+      bundle.source = 'cache';
+      bundle.provider = 'cache';
+      bundle.model = 'cache';
+      bundle.parseStage = 'cache_frames';
+      applyFrames(validFrames);
+      return bundle;
+    }
+  }
+
+  const llmOptions = {
+    ...getForecastLlmCallOptions('critical_signals'),
+    stage: 'critical_signals',
+    maxTokens: 1200,
+    temperature: 0.1,
+  };
+  const result = await callForecastLLM(
+    CRITICAL_SIGNAL_SYSTEM_PROMPT,
+    buildCriticalSignalUserPrompt(candidates),
+    llmOptions,
+  );
+
+  if (!result) {
+    bundle.failureReason = 'call_failed';
+    const fallbackSignals = fallbackSignalsFromCandidates();
+    bundle.fallbackNewsSignalCount = fallbackSignals.length;
+    bundle.signals = [...fallbackSignals, ...structuredSignals];
+    return bundle;
+  }
+
+  const parsed = extractStructuredLlmPayload(result.text);
+  const validFrames = validateCriticalSignalFrames(parsed.items, candidates);
+  bundle.source = 'live';
+  bundle.provider = result.provider;
+  bundle.model = result.model;
+  bundle.parseStage = parsed.diagnostics?.stage || '';
+  bundle.rawPreview = parsed.diagnostics?.preview || '';
+
+  if (validFrames.length === 0) {
+    bundle.failureReason = parsed.items == null ? 'parse_failed' : 'validation_failed';
+    const fallbackSignals = fallbackSignalsFromCandidates();
+    bundle.fallbackNewsSignalCount = fallbackSignals.length;
+    bundle.signals = [...fallbackSignals, ...structuredSignals];
+    return bundle;
+  }
+
+  applyFrames(validFrames);
+  await redisSet(url, token, cacheKey, { frames: validFrames }, CRITICAL_SIGNAL_CACHE_TTL_SECONDS);
+  return bundle;
+}
+
+function extractCriticalNewsSignals(inputs) {
+  if (Array.isArray(inputs?.criticalSignalBundle?.signals)) return inputs.criticalSignalBundle.signals;
+  return [
+    ...extractRegexCriticalNewsSignals(inputs),
+    ...extractStructuredCriticalSignals(inputs),
+  ];
 }
 
 function attachNewsContext(predictions, newsInsights, newsDigest) {
@@ -6595,7 +7061,7 @@ function extractCorrelationCards(payload) {
   if (payload && typeof payload === 'object') {
     const grouped = Object.values(payload)
       .filter((value) => Array.isArray(value))
-      .flatMap((value) => value);
+      .flat();
     if (grouped.length > 0) return grouped;
   }
   return [];
@@ -6719,6 +7185,7 @@ function summarizeWorldSignals(signals = []) {
 
 function buildWorldSignals(inputs, predictions = [], _situationClusters = []) {
   const signals = [];
+  const criticalSignalBundle = inputs?.criticalSignalBundle || null;
   const criticalNewsSignals = extractCriticalNewsSignals(inputs);
   const chokepoints = inputs?.chokepoints?.routes || inputs?.chokepoints?.chokepoints || [];
   const shippingIndices = extractShippingIndices(inputs?.shippingRates);
@@ -7223,6 +7690,20 @@ function buildWorldSignals(inputs, predictions = [], _situationClusters = []) {
     typeCounts: signalTypeCounts,
     criticalSignalCount: criticalSignals.length,
     criticalSignals: criticalSignals.slice(0, 16),
+    criticalExtraction: criticalSignalBundle ? {
+      source: criticalSignalBundle.source || 'deterministic_only',
+      provider: criticalSignalBundle.provider || '',
+      model: criticalSignalBundle.model || '',
+      parseStage: criticalSignalBundle.parseStage || '',
+      failureReason: criticalSignalBundle.failureReason || '',
+      candidateCount: Number(criticalSignalBundle.candidateCount || 0),
+      extractedFrameCount: Number(criticalSignalBundle.extractedFrameCount || 0),
+      mappedSignalCount: Number(criticalSignalBundle.mappedSignalCount || 0),
+      fallbackNewsSignalCount: Number(criticalSignalBundle.fallbackNewsSignalCount || 0),
+      structuredSignalCount: Number(criticalSignalBundle.structuredSignalCount || 0),
+      rawPreview: criticalSignalBundle.rawPreview || '',
+      candidates: Array.isArray(criticalSignalBundle.candidates) ? criticalSignalBundle.candidates.slice(0, 8) : [],
+    } : null,
     signals: dedupedSignals
       .sort((a, b) => (b.strength + b.confidence) - (a.strength + a.confidence) || a.label.localeCompare(b.label))
       .slice(0, 80),
@@ -7598,6 +8079,8 @@ function summarizeWorldStateSurface(worldState) {
     familyCount: worldState.situationFamilies?.length || 0,
     worldSignalCount: worldState.worldSignals?.signals?.length || 0,
     criticalSignalCount: worldState.worldSignals?.criticalSignalCount || 0,
+    criticalSignalCandidateCount: worldState.worldSignals?.criticalExtraction?.candidateCount || 0,
+    criticalSignalFrameCount: worldState.worldSignals?.criticalExtraction?.extractedFrameCount || 0,
     marketBucketCount: worldState.marketState?.buckets?.length || 0,
     transmissionEdgeCount: worldState.marketTransmission?.edges?.length || 0,
     marketConsequenceCount: worldState.simulationState?.marketConsequences?.items?.length || 0,
@@ -7806,6 +8289,12 @@ function buildForecastTraceArtifacts(data, context = {}, config = {}) {
       situationCount: worldState.situationClusters.length,
       familyCount: worldState.situationFamilies?.length || 0,
       worldSignalCount: worldState.worldSignals?.signals?.length || 0,
+      criticalSignalCount: worldState.worldSignals?.criticalSignalCount || 0,
+      criticalSignalSource: worldState.worldSignals?.criticalExtraction?.source || '',
+      criticalSignalCandidateCount: worldState.worldSignals?.criticalExtraction?.candidateCount || 0,
+      criticalSignalFrameCount: worldState.worldSignals?.criticalExtraction?.extractedFrameCount || 0,
+      criticalSignalFallbackCount: worldState.worldSignals?.criticalExtraction?.fallbackNewsSignalCount || 0,
+      criticalSignalFailureReason: worldState.worldSignals?.criticalExtraction?.failureReason || '',
       marketBucketCount: worldState.marketState?.buckets?.length || 0,
       transmissionEdgeCount: worldState.marketTransmission?.edges?.length || 0,
       marketConsequenceCount: worldState.simulationState?.marketConsequences?.items?.length || 0,
@@ -8884,13 +9373,18 @@ function getForecastLlmCallOptions(stage = 'default') {
   const defaultProviderOrder = FORECAST_LLM_PROVIDERS.map(provider => provider.name);
   const globalProviderOrder = parseForecastProviderOrder(process.env.FORECAST_LLM_PROVIDER_ORDER);
   const combinedProviderOrder = parseForecastProviderOrder(process.env.FORECAST_LLM_COMBINED_PROVIDER_ORDER);
+  const criticalProviderOrder = parseForecastProviderOrder(process.env.FORECAST_LLM_CRITICAL_PROVIDER_ORDER);
   const providerOrder = stage === 'combined'
     ? (combinedProviderOrder || globalProviderOrder || defaultProviderOrder)
-    : (globalProviderOrder || defaultProviderOrder);
+    : stage === 'critical_signals'
+      ? (criticalProviderOrder || globalProviderOrder || defaultProviderOrder)
+      : (globalProviderOrder || defaultProviderOrder);
 
   const openrouterModel = stage === 'combined'
     ? (process.env.FORECAST_LLM_COMBINED_MODEL_OPENROUTER || process.env.FORECAST_LLM_MODEL_OPENROUTER)
-    : process.env.FORECAST_LLM_MODEL_OPENROUTER;
+    : stage === 'critical_signals'
+      ? (process.env.FORECAST_LLM_CRITICAL_MODEL_OPENROUTER || process.env.FORECAST_LLM_MODEL_OPENROUTER)
+      : process.env.FORECAST_LLM_MODEL_OPENROUTER;
 
   return {
     providerOrder,
@@ -9146,8 +9640,8 @@ async function callForecastLLM(systemPrompt, userPrompt, options = {}) {
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
           ],
-          max_tokens: 1500,
-          temperature: 0.3,
+          max_tokens: options.maxTokens || 1500,
+          temperature: options.temperature ?? 0.3,
         }),
         signal: AbortSignal.timeout(provider.timeout),
       });
@@ -9672,6 +10166,9 @@ async function fetchForecasts() {
 
   console.log('  Reading input data from Redis...');
   const inputs = await readInputKeys();
+  console.log('  Extracting urgent critical event frames...');
+  inputs.criticalSignalBundle = await extractCriticalSignalBundle(inputs);
+  console.log(`  [CriticalSignals] source=${inputs.criticalSignalBundle.source} candidates=${inputs.criticalSignalBundle.candidateCount} frames=${inputs.criticalSignalBundle.extractedFrameCount} fallbackNewsSignals=${inputs.criticalSignalBundle.fallbackNewsSignalCount} structuredSignals=${inputs.criticalSignalBundle.structuredSignalCount}`);
   const prior = await readPriorPredictions();
 
   console.log('  Running domain detectors...');
@@ -9988,5 +10485,9 @@ export {
   getSearchTermsForRegion,
   extractAllHeadlines,
   extractNewsClusterItems,
+  selectUrgentCriticalNewsCandidates,
+  validateCriticalSignalFrames,
+  mapCriticalSignalFrameToSignals,
+  extractCriticalSignalBundle,
   extractCriticalNewsSignals,
 };

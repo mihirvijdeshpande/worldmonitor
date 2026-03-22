@@ -17,6 +17,9 @@ import {
   refreshPublishedNarratives,
   selectPublishedForecastPool,
   extractNewsClusterItems,
+  selectUrgentCriticalNewsCandidates,
+  validateCriticalSignalFrames,
+  mapCriticalSignalFrameToSignals,
   extractCriticalNewsSignals,
 } from '../scripts/seed-forecasts.mjs';
 
@@ -2640,6 +2643,159 @@ describe('critical news signal extraction', () => {
 
     assert.equal(lngSignals.length, 1);
     assert.equal(energySignals.length, 1);
+  });
+
+  it('triages only urgent free-form critical-news candidates for structured extraction', () => {
+    const candidates = selectUrgentCriticalNewsCandidates({
+      newsInsights: {
+        generatedAt: '2026-03-22T12:00:00.000Z',
+        topStories: [
+          {
+            primaryTitle: 'Cabinet coalition talks continue ahead of reform vote',
+            primaryLink: 'https://example.com/politics',
+            threatLevel: 'moderate',
+            sourceCount: 3,
+            isAlert: false,
+          },
+          {
+            primaryTitle: 'Iran threatens closure of the Strait of Hormuz after tanker strike',
+            primaryLink: 'https://example.com/hormuz',
+            threatLevel: 'critical',
+            sourceCount: 5,
+            isAlert: true,
+          },
+          {
+            primaryTitle: 'Attack reported near Ras Laffan LNG export terminal in Qatar',
+            primaryLink: 'https://example.com/ras-laffan',
+            threatLevel: 'critical',
+            sourceCount: 4,
+            isAlert: true,
+          },
+        ],
+      },
+    });
+
+    assert.equal(candidates.length, 2);
+    assert.equal(candidates[0].title, 'Iran threatens closure of the Strait of Hormuz after tanker strike');
+    assert.ok(candidates.every((item) => item.isUrgent));
+    assert.ok(candidates.every((item) => item.urgentScore >= 0.58));
+    assert.ok(candidates.every((item) => item.triageTags.length > 0));
+  });
+
+  it('maps validated structured critical-event frames into deterministic world signals', () => {
+    const candidates = selectUrgentCriticalNewsCandidates({
+      newsInsights: {
+        generatedAt: '2026-03-22T12:00:00.000Z',
+        topStories: [
+          {
+            primaryTitle: 'Attack reported near Ras Laffan LNG export terminal in Qatar',
+            primaryLink: 'https://example.com/ras-laffan',
+            threatLevel: 'critical',
+            sourceCount: 4,
+            isAlert: true,
+          },
+        ],
+      },
+    });
+    const validFrames = validateCriticalSignalFrames([
+      {
+        index: candidates[0].candidateIndex,
+        primaryKind: 'facility_attack',
+        impactHints: ['energy', 'gas_lng'],
+        region: 'Middle East',
+        macroRegion: 'MENA',
+        facility: 'Ras Laffan LNG terminal',
+        commodity: 'LNG exports',
+        actor: 'Iran-linked strike',
+        strength: 0.88,
+        confidence: 0.83,
+        evidence: ['Attack reported near Ras Laffan LNG export terminal in Qatar'],
+        summary: 'A direct strike on LNG export infrastructure is threatening gas exports.',
+      },
+    ], candidates);
+
+    assert.equal(validFrames.length, 1);
+
+    const signals = mapCriticalSignalFrameToSignals(validFrames[0], candidates[0]);
+    const types = new Set(signals.map((signal) => signal.type));
+    const sourceTypes = new Set(signals.map((signal) => signal.sourceType));
+
+    assert.ok(types.has('energy_supply_shock'));
+    assert.ok(types.has('gas_supply_stress'));
+    assert.ok(sourceTypes.has('critical_news_llm'));
+  });
+
+  it('prefers a precomputed critical-signal bundle in world-state and trace summaries', () => {
+    const candidates = selectUrgentCriticalNewsCandidates({
+      newsInsights: {
+        generatedAt: '2026-03-22T12:00:00.000Z',
+        topStories: [
+          {
+            primaryTitle: 'Iran threatens closure of the Strait of Hormuz after tanker strike',
+            primaryLink: 'https://example.com/hormuz',
+            threatLevel: 'critical',
+            sourceCount: 5,
+            isAlert: true,
+          },
+        ],
+      },
+    });
+    const frames = validateCriticalSignalFrames([
+      {
+        index: candidates[0].candidateIndex,
+        primaryKind: 'route_blockage',
+        impactHints: ['shipping', 'energy'],
+        region: 'Middle East',
+        macroRegion: 'MENA',
+        route: 'Strait of Hormuz',
+        commodity: 'crude oil transit',
+        strength: 0.9,
+        confidence: 0.86,
+        evidence: ['Iran threatens closure of the Strait of Hormuz after tanker strike'],
+        summary: 'Blockage risk at Hormuz is threatening shipping and oil transit.',
+      },
+    ], candidates);
+    const llmSignals = mapCriticalSignalFrameToSignals(frames[0], candidates[0]);
+    const bundle = {
+      source: 'live',
+      provider: 'openrouter',
+      model: 'google/gemini-2.5-flash',
+      parseStage: 'direct_array',
+      failureReason: '',
+      candidateCount: 1,
+      extractedFrameCount: 1,
+      mappedSignalCount: llmSignals.length,
+      fallbackNewsSignalCount: 0,
+      structuredSignalCount: 0,
+      rawPreview: '[{"index":0}]',
+      candidates: candidates.map((item) => ({
+        index: item.candidateIndex,
+        title: item.title,
+        urgentScore: item.urgentScore,
+        threatLevel: item.threatLevel,
+      })),
+      signals: llmSignals,
+    };
+
+    const worldState = buildForecastRunWorldState({
+      generatedAt: Date.parse('2026-03-22T12:00:00Z'),
+      predictions: [],
+      inputs: { criticalSignalBundle: bundle },
+    });
+
+    assert.equal(worldState.worldSignals?.criticalExtraction?.source, 'live');
+    assert.equal(worldState.worldSignals?.criticalExtraction?.candidateCount, 1);
+    assert.equal(worldState.worldSignals?.criticalExtraction?.extractedFrameCount, 1);
+
+    const artifacts = buildForecastTraceArtifacts({
+      generatedAt: Date.parse('2026-03-22T12:00:00Z'),
+      predictions: [],
+      inputs: { criticalSignalBundle: bundle },
+    }, { runId: 'critical-bundle' });
+
+    assert.equal(artifacts.summary.worldStateSummary.criticalSignalSource, 'live');
+    assert.equal(artifacts.summary.worldStateSummary.criticalSignalCandidateCount, 1);
+    assert.equal(artifacts.summary.worldStateSummary.criticalSignalFrameCount, 1);
   });
 
   it('does not promote generic political headlines into critical world signals', () => {
