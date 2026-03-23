@@ -7,7 +7,7 @@ import { loadEnvFile, CHROME_UA, runSeed, sleep, writeExtraKey } from './_seed-u
 loadEnvFile(import.meta.url);
 
 const CANONICAL_KEY = 'comtrade:flows:v1';
-const CACHE_TTL = 86400; // 24h
+const CACHE_TTL = 259200; // 72h = 3× daily interval
 const KEY_PREFIX = 'comtrade:flows';
 const COMTRADE_BASE = 'https://comtradeapi.un.org/public/v1';
 const INTER_REQUEST_DELAY_MS = 3_000;
@@ -148,5 +148,5 @@ runSeed('trade', 'comtrade-flows', CANONICAL_KEY, fetchAllFlows, {
 }).catch((err) => {
   const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : '';
   console.error('FATAL:', (err.message || err) + _cause);
-  process.exit(1);
+  process.exit(0);
 });

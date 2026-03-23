@@ -4,7 +4,7 @@ import type {
   ListComtradeFlowsResponse,
   ComtradeFlowRecord,
 } from '../../../../src/generated/server/worldmonitor/trade/v1/service_server';
-import { getCachedJson } from '../../../_shared/redis';
+import { getCachedJsonBatch } from '../../../_shared/redis';
 
 const KEY_PREFIX = 'comtrade:flows';
 
@@ -25,13 +25,13 @@ export async function listComtradeFlows(
     const cmdCodes = req.cmdCode && /^\d{4,6}$/.test(req.cmdCode) ? [req.cmdCode] : CMD_CODES;
 
     const keys = reporters.flatMap((r) => cmdCodes.map((c) => `${KEY_PREFIX}:${r}:${c}`));
-    const results = await Promise.all(keys.map((k) => getCachedJson(k, true)));
+    const batch = await getCachedJsonBatch(keys);
 
     const flows: ComtradeFlowRecord[] = [];
     let fetchedAt = '';
     let dataFound = false;
 
-    for (const result of results) {
+    for (const result of batch.values()) {
       if (!result) continue;
       dataFound = true;
       const records = Array.isArray(result) ? result : (result as { flows?: ComtradeFlowRecord[]; fetchedAt?: string }).flows ?? [];
