@@ -31,6 +31,8 @@ import {
   computeDeepMarketCoherenceScore,
   computeDeepPathAcceptanceScore,
   selectDeepForecastCandidates,
+  serializeSituationMarketContextIndex,
+  buildDeepForecastSnapshotPayload,
   validateImpactHypotheses,
   evaluateDeepForecastPaths,
   validateDeepForecastSnapshot,
@@ -4450,6 +4452,38 @@ describe('military domain guarantee in publish selection', () => {
 });
 
 describe('forecast replay lifecycle helpers', () => {
+  it('serializes situation market context maps before writing deep snapshots', () => {
+    const marketSelectionIndex = {
+      bySituationId: new Map([
+        ['state-1', {
+          situationId: 'state-1',
+          topBucketId: 'energy',
+          topChannel: 'shipping_cost_shock',
+          confirmationScore: 0.71,
+        }],
+      ]),
+      summary: '1 state-aware market context was derived.',
+    };
+
+    const serialized = serializeSituationMarketContextIndex(marketSelectionIndex);
+    assert.deepEqual(serialized.bySituationId, {
+      'state-1': {
+        situationId: 'state-1',
+        topBucketId: 'energy',
+        topChannel: 'shipping_cost_shock',
+        confirmationScore: 0.71,
+      },
+    });
+
+    const snapshot = buildDeepForecastSnapshotPayload({
+      generatedAt: Date.parse('2026-03-23T18:25:20.121Z'),
+      marketSelectionIndex,
+    }, { runId: 'run-123' });
+
+    assert.deepEqual(snapshot.marketSelectionIndex.bySituationId, serialized.bySituationId);
+    assert.equal(snapshot.marketSelectionIndex.summary, marketSelectionIndex.summary);
+  });
+
   it('flags invalid deep snapshots with unresolved selected state ids and duplicate labels', () => {
     const validation = validateDeepForecastSnapshot({
       fullRunStateUnits: [

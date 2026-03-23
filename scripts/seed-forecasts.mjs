@@ -10061,6 +10061,23 @@ function summarizeMarketInputCoverage(inputs = {}) {
   return coverage;
 }
 
+function serializeSituationMarketContextIndex(index = null) {
+  if (!index || typeof index !== 'object') return null;
+  const bySituationId = index.bySituationId;
+  let serializedBySituationId = {};
+  if (bySituationId instanceof Map) {
+    serializedBySituationId = Object.fromEntries(bySituationId.entries());
+  } else if (Array.isArray(bySituationId)) {
+    serializedBySituationId = Object.fromEntries(bySituationId);
+  } else if (bySituationId && typeof bySituationId === 'object') {
+    serializedBySituationId = bySituationId;
+  }
+  return {
+    ...index,
+    bySituationId: serializedBySituationId,
+  };
+}
+
 function flattenImpactExpansionHypotheses(bundle = null) {
   const candidatePackets = Array.isArray(bundle?.candidatePackets) ? bundle.candidatePackets : [];
   const extractedCandidates = Array.isArray(bundle?.extractedCandidates) ? bundle.extractedCandidates : [];
@@ -11659,7 +11676,7 @@ function buildDeepForecastSnapshotPayload(data = {}, context = {}) {
     selectionMarketTransmission: data.selectionMarketTransmission || null,
     selectionMarketState: data.selectionMarketState || null,
     selectionMarketInputCoverage: data.selectionMarketInputCoverage || null,
-    marketSelectionIndex: data.marketSelectionIndex || null,
+    marketSelectionIndex: serializeSituationMarketContextIndex(data.marketSelectionIndex),
     triggerContext: data.triggerContext || null,
     enrichmentMeta: data.enrichmentMeta || null,
     publishTelemetry: data.publishTelemetry || null,
@@ -14215,6 +14232,7 @@ export {
   validateDeepForecastSnapshot,
   validateImpactHypotheses,
   materializeImpactExpansion,
+  serializeSituationMarketContextIndex,
   buildDeepForecastSnapshotKey,
   buildDeepForecastSnapshotPayload,
   writeDeepForecastSnapshot,
