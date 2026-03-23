@@ -129,7 +129,7 @@ export function clusterItems(items) {
       pubDate: primary.pubDate,
       sourceCount: group.length,
       isAlert: group.some(i => i.isAlert),
-      threat: threatItem?.threat ?? primary.threat,
+      threat: threatItem?.threat ? { ...threatItem.threat } : (primary.threat ? { ...primary.threat } : undefined),
     };
   });
 }
