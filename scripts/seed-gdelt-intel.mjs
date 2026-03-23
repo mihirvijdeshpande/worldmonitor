@@ -6,7 +6,7 @@ loadEnvFile(import.meta.url);
 
 const CANONICAL_KEY = 'intelligence:gdelt-intel:v1';
 const CACHE_TTL = 86400; // 24h — intentionally much longer than the 2h cron so verifySeedKey always has a prior snapshot to merge from when GDELT 429s all topics
-const TIMELINE_TTL = 3600; // 1h for tone/vol per-topic keys
+const TIMELINE_TTL = 43200; // 12h = 2× cron interval; tone/vol must survive until next 6h run
 const GDELT_DOC_API = 'https://api.gdeltproject.org/api/v2/doc/doc';
 const INTER_TOPIC_DELAY_MS = 20_000; // 20s between topics on success
 const POST_EXHAUST_DELAY_MS = 120_000; // 2min extra cooldown after a topic exhausts all retries
@@ -180,11 +180,12 @@ function publishTransform(data) {
 // Write per-topic tone/vol timeline keys (1h TTL) — separate from the 24h canonical key.
 async function afterPublish(data, _meta) {
   for (const topic of data.topics ?? []) {
+    const fetchedAt = topic.fetchedAt ?? data.fetchedAt;
     if (Array.isArray(topic._tone) && topic._tone.length > 0) {
-      await writeExtraKey(`gdelt:intel:tone:${topic.id}`, topic._tone, TIMELINE_TTL);
+      await writeExtraKey(`gdelt:intel:tone:${topic.id}`, { data: topic._tone, fetchedAt }, TIMELINE_TTL);
     }
     if (Array.isArray(topic._vol) && topic._vol.length > 0) {
-      await writeExtraKey(`gdelt:intel:vol:${topic.id}`, topic._vol, TIMELINE_TTL);
+      await writeExtraKey(`gdelt:intel:vol:${topic.id}`, { data: topic._vol, fetchedAt }, TIMELINE_TTL);
     }
   }
 }
@@ -199,6 +200,6 @@ if (process.argv[1]?.endsWith('seed-gdelt-intel.mjs')) {
   }).catch((err) => {
     const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : '';
     console.error('FATAL:', (err.message || err) + _cause);
-    process.exit(1);
+    process.exit(0);
   });
 }

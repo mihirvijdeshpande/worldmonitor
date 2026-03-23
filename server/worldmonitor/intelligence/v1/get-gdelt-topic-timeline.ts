@@ -23,9 +23,17 @@ export async function getGdeltTopicTimeline(
       getCachedJson(`gdelt:intel:vol:${topic}`, true),
     ]);
 
-    const tone = Array.isArray(toneData) ? toneData : [];
-    const vol = Array.isArray(volData) ? volData : [];
-    const fetchedAt = tone.length > 0 || vol.length > 0 ? new Date().toISOString() : '';
+    const unwrap = (d: unknown): { arr: unknown[]; fetchedAt: string } => {
+      if (d && typeof d === 'object' && !Array.isArray(d)) {
+        const obj = d as { data?: unknown[]; fetchedAt?: string };
+        return { arr: Array.isArray(obj.data) ? obj.data : [], fetchedAt: obj.fetchedAt ?? '' };
+      }
+      return { arr: Array.isArray(d) ? d : [], fetchedAt: '' };
+    };
+
+    const { arr: tone, fetchedAt: toneFetchedAt } = unwrap(toneData);
+    const { arr: vol, fetchedAt: volFetchedAt } = unwrap(volData);
+    const fetchedAt = toneFetchedAt || volFetchedAt;
 
     return { topic, tone, vol, fetchedAt, error: '' };
   } catch {
