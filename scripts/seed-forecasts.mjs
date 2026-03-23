@@ -274,6 +274,9 @@ const MARKET_BUCKET_ALLOWED_CHANNELS = {
   crypto_stablecoins: ['fx_stress', 'risk_off_rotation', 'liquidity_withdrawal', 'sovereign_stress'],
   defense: ['defense_repricing', 'security_escalation'],
 };
+// Adjacent-path gating intentionally stays aligned with direct gating for most buckets for now.
+// The one explicit exception is sovereign risk, where yield-curve and safe-haven confirmation
+// are treated as direct-only signals until we have enough live evidence to broaden the adjacent set.
 const MARKET_BUCKET_ADJACENT_CHANNELS = {
   energy: ['shipping_cost_shock', 'energy_supply_shock', 'gas_supply_stress', 'commodity_repricing', 'oil_macro_shock', 'global_crude_spread_stress'],
   freight: ['shipping_cost_shock', 'energy_supply_shock', 'gas_supply_stress', 'commodity_repricing'],
@@ -959,7 +962,7 @@ function computeStateDerivedBucketCandidate(domain, stateUnit, bucket, marketCon
   const channel = bucketContext?.topChannel || marketContext?.topChannel || '';
   const channelMatch = channel && supportedTypes.includes(channel);
   const channelAllowed = isMarketBucketChannelAllowed(bucket.id, channel, 'direct');
-  const signalMatchCount = overlapTypes.length + (channelMatch && !overlapTypes.includes(channel) ? 1 : 0);
+  const signalMatchCount = overlapTypes.length;
   const stateDomainMatch = intersectAny(stateUnit?.domains || [], domain === 'supply_chain'
     ? ['supply_chain', 'market', 'conflict', 'infrastructure']
     : ['market', 'supply_chain', 'conflict', 'political', 'infrastructure', 'cyber']);
@@ -976,7 +979,7 @@ function computeStateDerivedBucketCandidate(domain, stateUnit, bucket, marketCon
 
   const eligible = (
     (signalMatchCount > 0 && channelAllowed)
-    || (channelAllowed && stateDomainMatch && directBucket && bucketSignalTypes.length > 0)
+    || (channelAllowed && stateDomainMatch && directBucket && channelMatch)
     || (domain === 'supply_chain' && bucket.id === 'freight' && stateDomainMatch && directBucket && channel === 'shipping_cost_shock')
   );
   if (!eligible) return null;
@@ -5041,6 +5044,15 @@ function inferSystemEffectRelationFromChannel(channel, targetDomain) {
   return relationMap[`${channel}:${targetDomain}`] || inferSystemEffectRelation('', targetDomain);
 }
 
+function compareTransmissionEdgePriority(left, right) {
+  return (Number(right?.strength || 0) + Number(right?.confidence || 0)) - (Number(left?.strength || 0) + Number(left?.confidence || 0))
+    || Number(right?.strength || 0) - Number(left?.strength || 0)
+    || Number(right?.confidence || 0) - Number(left?.confidence || 0)
+    || String(left?.channel || '').localeCompare(String(right?.channel || ''))
+    || String(left?.sourceSituationId || '').localeCompare(String(right?.sourceSituationId || ''))
+    || String(left?.edgeId || '').localeCompare(String(right?.edgeId || ''));
+}
+
 function buildActorRoundActions(stage, situation, actors = []) {
   return actors.slice(0, 6).map((actor) => {
     let summary = '';
@@ -5525,9 +5537,12 @@ function buildSimulationMarketConsequences(simulationState, marketState, options
           ...(simulation.marketContext?.criticalSignalTypes || []),
         ]);
         const channelAllowed = isMarketBucketChannelAllowed(candidateBucketId, channel, consequenceType);
+        const bucketSupportSignalTypes = MARKET_BUCKET_CRITICAL_SIGNAL_TYPES[candidateBucketId]
+          || MARKET_BUCKET_CONFIG.find((item) => item.id === candidateBucketId)?.signalTypes
+          || [];
         const bucketSignalSupport = intersectCount(
           supportingSignalTypes,
-          MARKET_BUCKET_CRITICAL_SIGNAL_TYPES[candidateBucketId] || [],
+          bucketSupportSignalTypes,
         );
         const criticalSignalLift = Number(simulation.marketContext?.criticalSignalLift || 0);
         const criticalSignalTypes = simulation.marketContext?.criticalSignalTypes || [];
@@ -8595,7 +8610,7 @@ function buildSituationMarketContextIndex(worldSignals, marketTransmission, mark
         .filter(Boolean);
       const topEdge = bucketEdges
         .slice()
-        .sort((a, b) => (b.strength + b.confidence) - (a.strength + a.confidence) || a.targetLabel.localeCompare(b.targetLabel))[0] || null;
+        .sort(compareTransmissionEdgePriority)[0] || null;
       bucketContexts[bucketId] = {
         bucketId,
         bucketLabel: bucket.label,
@@ -8659,7 +8674,7 @@ function buildSituationMarketContextIndex(worldSignals, marketTransmission, mark
       .sort((a, b) => (b.pressureScore + b.confidence) - (a.pressureScore + a.confidence) || a.label.localeCompare(b.label))[0];
     const topEdge = situationEdges
       .slice()
-      .sort((a, b) => (b.strength + b.confidence) - (a.strength + a.confidence) || a.targetLabel.localeCompare(b.targetLabel))[0];
+      .sort(compareTransmissionEdgePriority)[0];
     const topBucketCoverageScore = topBucket ? computeMarketBucketCoverageScore(topBucket.id, marketInputCoverage) : 0;
 
     contexts.set(source.id, {

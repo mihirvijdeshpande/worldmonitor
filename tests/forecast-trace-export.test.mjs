@@ -904,6 +904,97 @@ describe('state-driven domain derivation', () => {
     assert.equal(derived[0].stateDerivedBackfill, true);
   });
 
+  it('does not derive a market forecast when the direct bucket only has an allowed but semantically mismatched channel', () => {
+    const base = makePrediction('conflict', 'Red Sea', 'Escalation risk: Red Sea maritime pressure', 0.69, 0.58, '7d', [
+      { type: 'shipping_cost_shock', value: 'Shipping routes remain under pressure', weight: 0.35 },
+    ]);
+    base.stateContext = {
+      id: 'state-red-sea-mismatch',
+      label: 'Red Sea maritime disruption state',
+      dominantRegion: 'Red Sea',
+      dominantDomain: 'conflict',
+      domains: ['conflict', 'supply_chain'],
+      topSignals: [{ type: 'shipping_cost_shock' }],
+    };
+
+    const derived = deriveStateDrivenForecasts({
+      existingPredictions: [base],
+      stateUnits: [
+        {
+          id: 'state-red-sea-mismatch',
+          label: 'Red Sea maritime disruption state',
+          stateKind: 'transport_pressure',
+          dominantRegion: 'Red Sea',
+          dominantDomain: 'conflict',
+          regions: ['Red Sea'],
+          domains: ['conflict', 'supply_chain'],
+          actors: ['Regional shipping operators'],
+          branchKinds: ['base_case'],
+          signalTypes: ['shipping_cost_shock'],
+          sourceSituationIds: ['sit-red-sea-mismatch'],
+          situationIds: ['sit-red-sea-mismatch'],
+          situationCount: 1,
+          forecastIds: [base.id],
+          forecastCount: 1,
+          avgProbability: 0.69,
+          avgConfidence: 0.58,
+          topSignals: [{ type: 'shipping_cost_shock', count: 3 }],
+          sampleTitles: [base.title],
+        },
+      ],
+      worldSignals: {
+        signals: [
+          {
+            id: 'sig-ship-only',
+            type: 'shipping_cost_shock',
+            sourceType: 'critical_news',
+            region: 'Red Sea',
+            macroRegion: 'EMEA',
+            strength: 0.73,
+            confidence: 0.66,
+            label: 'Red Sea shipping costs are surging',
+          },
+        ],
+      },
+      marketTransmission: {
+        edges: [
+          {
+            sourceSituationId: 'state-red-sea-mismatch',
+            sourceLabel: 'Red Sea maritime disruption state',
+            targetBucketId: 'energy',
+            targetLabel: 'Energy',
+            channel: 'shipping_cost_shock',
+            strength: 0.72,
+            confidence: 0.64,
+            supportingSignalIds: ['sig-ship-only'],
+          },
+        ],
+      },
+      marketState: {
+        buckets: [
+          {
+            id: 'energy',
+            label: 'Energy',
+            pressureScore: 0.74,
+            confidence: 0.66,
+            macroConfirmation: 0.04,
+          },
+        ],
+      },
+      marketInputCoverage: {
+        commodities: 14,
+        gulfQuotes: 10,
+        shippingRates: 0,
+        fredSeries: 0,
+        bisExchange: 0,
+        bisPolicy: 0,
+        correlationCards: 0,
+      },
+    });
+
+    assert.equal(derived.some((pred) => pred.domain === 'market'), false);
+  });
+
   it('keeps state-derived market clustering coherent across source states and buckets', () => {
     const indiaFx = makePrediction('market', 'India', 'FX stress from India cyber pressure state', 0.58, 0.56, '14d', [
       { type: 'risk_off_rotation', value: 'Risk-off pricing is pressuring India FX', weight: 0.36 },
@@ -2110,6 +2201,79 @@ describe('forecast run world state', () => {
     assert.equal(effects.length, 0);
     assert.ok(Array.isArray(effects.blocked));
     assert.equal(effects.blocked.length, 0);
+  });
+
+  it('returns reportable effects and blocked metadata when the reportable interaction ledger is populated', () => {
+    const effects = buildCrossSituationEffects({
+      situationSimulations: [
+        {
+          situationId: 'sit-source',
+          label: 'Baltic Sea supply chain situation',
+          dominantDomain: 'supply_chain',
+          familyId: 'fam-baltic',
+          familyLabel: 'Baltic maritime supply family',
+          regions: ['Baltic Sea'],
+          actorIds: ['actor-shipping'],
+          effectChannels: [{ type: 'logistics_disruption', count: 3 }],
+          posture: 'escalatory',
+          postureScore: 0.74,
+          totalPressure: 0.84,
+          totalStabilization: 0.21,
+        },
+        {
+          situationId: 'sit-target',
+          label: 'Black Sea market situation',
+          dominantDomain: 'market',
+          familyId: 'fam-black-sea',
+          familyLabel: 'Black Sea market repricing family',
+          regions: ['Black Sea'],
+          actorIds: ['actor-market'],
+          effectChannels: [],
+          posture: 'contested',
+          postureScore: 0.49,
+          totalPressure: 0.58,
+          totalStabilization: 0.31,
+        },
+      ],
+      reportableInteractionLedger: [
+        {
+          sourceSituationId: 'sit-source',
+          targetSituationId: 'sit-target',
+          sourceLabel: 'Baltic Sea supply chain situation',
+          targetLabel: 'Black Sea market situation',
+          sourceActorName: 'Shipping operator',
+          targetActorName: 'Commodity desk',
+          interactionType: 'regional_spillover',
+          strongestChannel: 'logistics_disruption',
+          score: 5.2,
+          confidence: 0.79,
+          actorSpecificity: 0.91,
+          sharedActor: false,
+          regionLink: false,
+          stage: 'round_2',
+        },
+        {
+          sourceSituationId: 'sit-source',
+          targetSituationId: 'sit-target',
+          sourceLabel: 'Baltic Sea supply chain situation',
+          targetLabel: 'Black Sea market situation',
+          sourceActorName: 'Shipping operator',
+          targetActorName: 'Commodity desk',
+          interactionType: 'regional_spillover',
+          strongestChannel: 'logistics_disruption',
+          score: 5.1,
+          confidence: 0.78,
+          actorSpecificity: 0.91,
+          sharedActor: false,
+          regionLink: false,
+          stage: 'round_3',
+        },
+      ],
+    }, { mode: 'reportable' });
+
+    assert.ok(effects.length >= 1);
+    assert.ok(effects.some((item) => item.channel === 'logistics_disruption'));
+    assert.ok(Array.isArray(effects.blocked));
   });
 
   it('aggregates cross-situation effects across reportable interaction ledgers larger than 32 rows', () => {
