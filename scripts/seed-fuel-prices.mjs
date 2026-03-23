@@ -226,6 +226,14 @@ async function fetchUS_EIA() {
   }
 }
 
+// EU Oil Bulletin CSV: EUR per 1000 liters. URL pattern is YYYY-MM/filename — update when EC rotates.
+// Discovery: https://energy.ec.europa.eu/data-and-analysis/weekly-oil-bulletin_en (check "Download" links)
+function parseEUPrice(raw) {
+  if (!raw || raw === '') return null;
+  const v = parseFloat(raw.replace(',', '.'));
+  return v > 0 ? +(v / 1000).toFixed(4) : null;
+}
+
 async function fetchEU_CSV() {
   const EU_CSV_URLS = [
     'https://energy.ec.europa.eu/system/files/2024-10/weekly_oil_bulletin_prices_history.csv',
@@ -284,20 +292,13 @@ async function fetchEU_CSV() {
         const gasRaw = gasolIdx >= 0 ? row[gasolIdx] : null;
         const dslRaw = dieselIdx >= 0 ? row[dieselIdx] : null;
 
-        // EU data is in EUR per 1000 liters
-        function parseEUPrice(raw) {
-          if (!raw || raw === '') return null;
-          const v = parseFloat(raw.replace(',', '.'));
-          return v > 0 ? +(v / 1000).toFixed(4) : null;
-        }
-
         const gasPrice = parseEUPrice(gasRaw);
         const dslPrice = parseEUPrice(dslRaw);
 
         euResults.push({
           code: iso2,
           name: info.name,
-          currency: info.currency,
+          currency: 'EUR', // EU Oil Bulletin prices are EUR-denominated even for non-euro members
           flag: info.flag,
           gasoline: gasPrice != null ? { localPrice: gasPrice, grade: 'E5', source: 'energy.ec.europa.eu', observedAt: maxDate } : null,
           diesel: dslPrice != null ? { localPrice: dslPrice, grade: 'Diesel', source: 'energy.ec.europa.eu', observedAt: maxDate } : null,
@@ -317,10 +318,200 @@ async function fetchEU_CSV() {
   return [];
 }
 
+async function fetchBrazil() {
+  // Two CSVs: gasoline/ethanol and diesel/gnv. Aggregate per-station to national mean.
+  // Decimal separator: comma. Date format: DD/MM/YYYY.
+  const GAS_URL = 'https://www.gov.br/anp/pt-br/centrais-de-conteudo/dados-abertos/arquivos/shpc/qus/ultimas-4-semanas-gasolina-etanol.csv';
+  const DSL_URL = 'https://www.gov.br/anp/pt-br/centrais-de-conteudo/dados-abertos/arquivos/shpc/qus/ultimas-4-semanas-diesel-gnv.csv';
+
+  function parseBRPrice(str) {
+    if (!str) return null;
+    const v = parseFloat(str.replace(',', '.'));
+    return v > 0 ? v : null;
+  }
+
+  function parseBRDate(str) {
+    // DD/MM/YYYY -> YYYY-MM-DD for ISO sort
+    if (!str) return '';
+    const [d, m, y] = str.split('/');
+    return y && m && d ? `${y}-${m}-${d}` : str;
+  }
+
+  function nationalMean(csvText, productoFilter, priceField) {
+    const lines = csvText.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return null;
+    const header = lines[0].split(';').map(h => h.replace(/^"|"$/g, '').trim());
+    const prodIdx = header.findIndex(h => /produto/i.test(h));
+    const priceIdx = header.findIndex(h => h.toLowerCase().includes(priceField.toLowerCase()));
+    const dateIdx = header.findIndex(h => /data.*coleta/i.test(h));
+    if (prodIdx < 0 || priceIdx < 0 || dateIdx < 0) return null;
+
+    const rows = lines.slice(1).map(l => l.split(';').map(c => c.replace(/^"|"$/g, '').trim()));
+    const filtered = rows.filter(r => r[prodIdx] === productoFilter);
+    if (!filtered.length) return null;
+
+    // Pre-compute ISO dates once to avoid double-converting per row
+    const withDates = filtered.map(r => ({ r, iso: parseBRDate(r[dateIdx]) }));
+    const maxDate = withDates.map(x => x.iso).filter(Boolean).sort().at(-1);
+    const latest = withDates.filter(x => x.iso === maxDate).map(x => x.r);
+    const prices = latest.map(r => parseBRPrice(r[priceIdx])).filter(v => v != null);
+    if (!prices.length) return { avg: null, date: maxDate };
+    const avg = +(prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(4);
+    return { avg, date: maxDate };
+  }
+
+  try {
+    // Use allSettled so a 429 on the diesel CSV doesn't discard gasoline data
+    const [gasResult, dslResult] = await Promise.allSettled([
+      globalThis.fetch(GAS_URL, { headers: { 'User-Agent': CHROME_UA }, signal: AbortSignal.timeout(30000) })
+        .then(r => r.ok ? r.text() : Promise.reject(new Error(`Gas HTTP ${r.status}`))),
+      globalThis.fetch(DSL_URL, { headers: { 'User-Agent': CHROME_UA }, signal: AbortSignal.timeout(30000) })
+        .then(r => r.ok ? r.text() : Promise.reject(new Error(`Dsl HTTP ${r.status}`))),
+    ]);
+    if (gasResult.status === 'rejected') console.warn(`  [BR] gas CSV failed: ${gasResult.reason.message}`);
+    if (dslResult.status === 'rejected') console.warn(`  [BR] dsl CSV failed: ${dslResult.reason.message}`);
+
+    const gas = gasResult.status === 'fulfilled' ? nationalMean(gasResult.value, 'GASOLINA', 'valor de venda') : null;
+    const dsl = dslResult.status === 'fulfilled' ? nationalMean(dslResult.value, 'DIESEL', 'valor de venda') : null;
+    if (!gas && !dsl) return [];
+
+    console.log(`  [BR] Gasoline=${gas?.avg} BRL/L (${gas?.date}), Diesel=${dsl?.avg} BRL/L (${dsl?.date})`);
+    return [{
+      code: 'BR', name: 'Brazil', currency: 'BRL', flag: '🇧🇷',
+      gasoline: gas?.avg != null ? { localPrice: gas.avg, grade: 'Regular', source: 'gov.br/anp', observedAt: gas.date } : null,
+      diesel: dsl?.avg != null ? { localPrice: dsl.avg, grade: 'Diesel', source: 'gov.br/anp', observedAt: dsl.date } : null,
+    }];
+  } catch (err) {
+    console.warn(`  [BR] fetchBrazil error: ${err.message}`);
+    return [];
+  }
+}
+
+async function fetchNewZealand() {
+  // Direct MBIE CSV. Filter: Variable='Board price', Region='National', latest week.
+  // Fuel: 'Regular Petrol' -> gasoline, 'Diesel' -> diesel. Unit: NZD/litre.
+  const url = 'https://www.mbie.govt.nz/assets/Data-Files/Energy/Weekly-fuel-price-monitoring/weekly-table.csv';
+  try {
+    const resp = await globalThis.fetch(url, {
+      headers: { 'User-Agent': CHROME_UA },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const text = await resp.text();
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return [];
+
+    // MBIE data uses simple numeric values — no quoted commas in value fields, bare split is safe
+    const header = lines[0].split(',').map(h => h.replace(/^"|"$/g, '').trim().toLowerCase());
+    const weekIdx = header.indexOf('week');
+    const varIdx = header.indexOf('variable');
+    const fuelIdx = header.indexOf('fuel');
+    const valIdx = header.indexOf('value');
+    const regionIdx = header.indexOf('region');
+    if ([weekIdx, varIdx, fuelIdx, valIdx, regionIdx].includes(-1)) {
+      console.warn('  [NZ] CSV header missing expected columns');
+      return [];
+    }
+
+    const rows = lines.slice(1).map(l => l.split(',').map(c => c.replace(/^"|"$/g, '').trim()));
+    const national = rows.filter(r =>
+      r[varIdx] === 'Board price' &&
+      r[regionIdx]?.toLowerCase() === 'national'
+    );
+    if (!national.length) return [];
+
+    const maxWeek = national.map(r => r[weekIdx]).filter(Boolean).sort().at(-1);
+    const latest = national.filter(r => r[weekIdx] === maxWeek);
+
+    const gasRow = latest.find(r => r[fuelIdx] === 'Regular Petrol');
+    const dslRow = latest.find(r => r[fuelIdx] === 'Diesel');
+    const gasPrice = gasRow ? parseFloat(gasRow[valIdx]) || null : null;
+    const dslPrice = dslRow ? parseFloat(dslRow[valIdx]) || null : null;
+
+    const dateIdx = header.indexOf('date');
+    const obsDate = dateIdx >= 0 ? (latest[0]?.[dateIdx] ?? maxWeek) : maxWeek;
+
+    console.log(`  [NZ] Gasoline=${gasPrice} NZD/L, Diesel=${dslPrice} NZD/L (week=${maxWeek})`);
+    return [{
+      code: 'NZ', name: 'New Zealand', currency: 'NZD', flag: '🇳🇿',
+      gasoline: gasPrice != null ? { localPrice: gasPrice, grade: 'Regular', source: 'mbie.govt.nz', observedAt: obsDate } : null,
+      diesel: dslPrice != null ? { localPrice: dslPrice, grade: 'Diesel', source: 'mbie.govt.nz', observedAt: obsDate } : null,
+    }];
+  } catch (err) {
+    console.warn(`  [NZ] fetchNewZealand error: ${err.message}`);
+    return [];
+  }
+}
+
+async function fetchUK_ModeA() {
+  // CMA voluntary scheme: each retailer hosts their own JSON feed. No auth required.
+  // Prices in pence/litre (integer). Divide by 100 -> GBP/litre.
+  // E10 = standard unleaded (gasoline), B7 = standard diesel.
+  // Aggregate across all working retailers for a national average.
+  const RETAILER_URLS = [
+    'https://storelocator.asda.com/fuel_prices_data.json',
+    'https://www.bp.com/en_gb/united-kingdom/home/fuelprices/fuel_prices_data.json',
+    'https://jetlocal.co.uk/fuel_prices_data.json',
+    'https://fuel.motorfuelgroup.com/fuel_prices_data.json',
+    'https://api.sainsburys.co.uk/v1/exports/latest/fuel_prices_data.json',
+    'https://www.morrisons.com/fuel-prices/fuel.json',
+  ];
+
+  const allE10 = [];
+  const allB7 = [];
+  let observedAt = new Date().toISOString().slice(0, 10);
+
+  const results = await Promise.allSettled(
+    RETAILER_URLS.map(url =>
+      globalThis.fetch(url, { headers: { 'User-Agent': CHROME_UA }, signal: AbortSignal.timeout(15000) })
+        .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status} ${url}`)))
+    )
+  );
+
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.status === 'rejected') {
+      console.warn(`  [UK] ${RETAILER_URLS[i]}: ${r.reason?.message ?? r.reason}`);
+      continue;
+    }
+    const body = r.value;
+    // CMA format: { last_updated, stations: [{ prices: { E10, B7, ... } }] }
+    const stations = body?.stations ?? body?.data ?? [];
+    if (!Array.isArray(stations)) continue;
+    if (body.last_updated) {
+      const d = body.last_updated.slice(0, 10);
+      if (d > observedAt) observedAt = d; // keep the latest date across all retailers
+    }
+    for (const s of stations) {
+      const prices = s?.prices ?? s?.fuel_prices ?? {};
+      const e10 = prices?.E10 ?? prices?.['E10_STANDARD'];
+      const b7 = prices?.B7 ?? prices?.['B7_STANDARD'];
+      if (e10 > 0) allE10.push(e10);
+      if (b7 > 0) allB7.push(b7);
+    }
+  }
+
+  if (!allE10.length && !allB7.length) {
+    console.warn('  [UK] No stations with E10/B7 data from any retailer');
+    return [];
+  }
+
+  // Prices are in pence/litre -> divide by 100 for GBP/litre
+  const avgE10 = allE10.length ? +(allE10.reduce((a, b) => a + b, 0) / allE10.length / 100).toFixed(4) : null;
+  const avgB7 = allB7.length ? +(allB7.reduce((a, b) => a + b, 0) / allB7.length / 100).toFixed(4) : null;
+
+  console.log(`  [GB] E10=${avgE10} GBP/L (${allE10.length} stations), B7=${avgB7} GBP/L (${allB7.length} stations)`);
+  return [{
+    code: 'GB', name: 'United Kingdom', currency: 'GBP', flag: '🇬🇧',
+    gasoline: avgE10 != null ? { localPrice: avgE10, grade: 'E10', source: 'gov.uk/fuel-finder', observedAt } : null,
+    diesel: avgB7 != null ? { localPrice: avgB7, grade: 'B7', source: 'gov.uk/fuel-finder', observedAt } : null,
+  }];
+}
+
 const prevSnapshot = await readSeedSnapshot(CANONICAL_KEY);
 
 const fxSymbols = {};
-for (const ccy of ['MYR', 'EUR', 'MXN', 'PLN', 'CZK', 'DKK', 'HUF', 'RON', 'SEK', 'BGN']) {
+for (const ccy of ['MYR', 'EUR', 'MXN', 'PLN', 'CZK', 'DKK', 'HUF', 'RON', 'SEK', 'BGN', 'BRL', 'NZD', 'GBP']) {
   fxSymbols[ccy] = `${ccy}USD=X`;
 }
 
@@ -333,9 +524,12 @@ const fetchResults = await Promise.allSettled([
   fetchMexico(),
   fetchUS_EIA(),
   fetchEU_CSV(),
+  fetchBrazil(),
+  fetchNewZealand(),
+  fetchUK_ModeA(),
 ]);
 
-const sourceNames = ['Malaysia', 'Spain', 'Mexico', 'US-EIA', 'EU-CSV'];
+const sourceNames = ['Malaysia', 'Spain', 'Mexico', 'US-EIA', 'EU-CSV', 'Brazil', 'New Zealand', 'UK-ModeA'];
 let successfulSources = 0;
 
 const countryMap = new Map();
@@ -416,8 +610,7 @@ if (wowAvailable) {
     if (country.gasoline && prev.gasoline?.usdPrice > 0 && country.gasoline.usdPrice > 0) {
       const raw = +((country.gasoline.usdPrice - prev.gasoline.usdPrice) / prev.gasoline.usdPrice * 100).toFixed(2);
       if (Math.abs(raw) > WOW_ANOMALY_THRESHOLD) {
-        console.warn(`  [WoW] ANOMALY ${country.flag} ${country.name} gasoline: ${raw}% — hiding`);
-        country.gasoline.wowPct = 0;
+        console.warn(`  [WoW] ANOMALY ${country.flag} ${country.name} gasoline: ${raw}% — omitting`);
       } else {
         country.gasoline.wowPct = raw;
       }
@@ -425,8 +618,7 @@ if (wowAvailable) {
     if (country.diesel && prev.diesel?.usdPrice > 0 && country.diesel.usdPrice > 0) {
       const raw = +((country.diesel.usdPrice - prev.diesel.usdPrice) / prev.diesel.usdPrice * 100).toFixed(2);
       if (Math.abs(raw) > WOW_ANOMALY_THRESHOLD) {
-        console.warn(`  [WoW] ANOMALY ${country.flag} ${country.name} diesel: ${raw}% — hiding`);
-        country.diesel.wowPct = 0;
+        console.warn(`  [WoW] ANOMALY ${country.flag} ${country.name} diesel: ${raw}% — omitting`);
       } else {
         country.diesel.wowPct = raw;
       }

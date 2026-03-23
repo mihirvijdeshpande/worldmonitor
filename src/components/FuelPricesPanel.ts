@@ -66,7 +66,7 @@ export class FuelPricesPanel extends Panel {
         return `<td class="gb-cell ${cls}">$${fuel.usdPrice.toFixed(3)}${wowStr}</td>`;
       }
 
-      const sourceText = (gas?.source ?? '').replace(/^https?:\/\//, '').split('/')[0] ?? '';
+      const sourceText = (gas?.source ?? '').replace(/^https?:\/\//, '').split('/')[0];
       const sourceLabel = sourceText
         ? `<td class="gb-cell fuel-source">${escapeHtml(sourceText)}</td>`
         : `<td class="gb-cell gb-na">—</td>`;
