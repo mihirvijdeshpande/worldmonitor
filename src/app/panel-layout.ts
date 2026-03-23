@@ -855,6 +855,10 @@ export class PanelLayoutManager implements AppModule {
       }),
     );
 
+    this.lazyPanel('cross-source-signals', () =>
+      import('@/components/CrossSourceSignalsPanel').then(m => new m.CrossSourceSignalsPanel()),
+    );
+
     this.createPanel('macro-signals', () => new MacroSignalsPanel());
     this.createPanel('etf-flows', () => new ETFFlowsPanel());
     this.createPanel('stablecoins', () => new StablecoinPanel());
