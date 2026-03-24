@@ -2229,6 +2229,8 @@ const CRITICAL_SIGNAL_CACHE_TTL_SECONDS = 20 * 60;
 const IMPACT_EXPANSION_SOURCE_TYPE = 'impact_expansion';
 
 function buildRegistryConstraintTable() {
+  // Format assumes all registry keys, channels, and bucket names are snake_case identifiers
+  // (no brackets, commas, or equals signs). If that changes, add escaping here.
   const varLines = Object.entries(IMPACT_VARIABLE_REGISTRY).map(([key, spec]) => {
     const channels = (spec.allowedChannels || []).join(',');
     const buckets = (spec.targetBuckets || []).join(',');
@@ -2240,6 +2242,9 @@ function buildRegistryConstraintTable() {
   });
   return `Variable constraints (each row: variableKey → allowed channels, targetBuckets, orderAllowed):\n${varLines.join('\n')}\n\nBucket-channel constraints (each targetBucket only accepts these channels):\n${bucketLines.join('\n')}`;
 }
+
+// Derived from module-level constants — computed once and reused across all prompt calls.
+const IMPACT_EXPANSION_REGISTRY_CONSTRAINT_TABLE = buildRegistryConstraintTable();
 
 function buildImpactExpansionSystemPrompt() {
   return `You are a consequence-expansion engine for a state-based geopolitical and market simulation model.
@@ -2275,7 +2280,7 @@ ImpactHypothesis:
   "evidenceRefs": string[]
 }
 
-${buildRegistryConstraintTable()}
+${IMPACT_EXPANSION_REGISTRY_CONSTRAINT_TABLE}
 
 Rules:
 - Each hypothesis must use a (variableKey, channel, targetBucket) triple that is VALID per the constraint table above. Both conditions must hold: (1) the channel must be in the variableKey's channels list, and (2) the targetBucket must accept that channel per the bucket-channel constraints.
@@ -5857,10 +5862,11 @@ function buildCanonicalStateUnits(situationClusters = [], situationFamilies = []
     }
   }
 
+  const seenLabels = new Set();
   return units
     .map(finalizeStateUnit)
     .sort((a, b) => b.forecastCount - a.forecastCount || b.avgProbability - a.avgProbability || a.label.localeCompare(b.label))
-    .filter(((seen) => (unit) => !seen.has(unit.label) && seen.add(unit.label))(new Set()));
+    .filter((unit) => !seenLabels.has(unit.label) && seenLabels.add(unit.label));
 }
 
 function buildSituationContinuitySummary(currentSituationClusters, priorWorldState = null) {

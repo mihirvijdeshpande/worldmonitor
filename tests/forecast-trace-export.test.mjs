@@ -4017,7 +4017,10 @@ describe('impact expansion layer', () => {
     assert.ok(evaluation.validation.hypotheses.every((h) => typeof h.candidateIndex === 'number' && typeof h.candidateStateId === 'string'));
   });
 
-  it('evaluateDeepForecastPaths includes validation on the no-expanded-accepted path', async () => {
+  it('evaluateDeepForecastPaths includes validation on paths beyond the mapped=0 early return', async () => {
+    // validation is present on all three return paths; this fixture exercises the success or
+    // no-expanded-accepted path depending on scoring. We assert mapped > 0 to confirm we
+    // are past the first (mapped=0) early return, and that validation shape is correct.
     const prediction = makePrediction('supply_chain', 'Red Sea', 'Shipping disruption: Red Sea', 0.68, 0.6, '7d', [
       { type: 'shipping_cost_shock', value: 'Shipping costs rising around Red Sea.', weight: 0.5 },
     ]);
@@ -4038,7 +4041,8 @@ describe('impact expansion layer', () => {
       fullRunStateUnits: baseState.stateUnits,
     }, null, bundle.candidatePackets, bundle);
 
-    assert.ok(evaluation.validation, 'validation must be present on no-expanded-accepted path');
+    assert.ok(evaluation.validation, 'validation must be present');
+    assert.ok((evaluation.validation.mapped || []).length > 0, 'fixture must produce mapped hypotheses (past mapped=0 early return)');
     assert.ok(Array.isArray(evaluation.validation.hypotheses));
     assert.ok(evaluation.validation.hypotheses.every((h) => typeof h.candidateIndex === 'number' && typeof h.candidateStateId === 'string'));
   });
