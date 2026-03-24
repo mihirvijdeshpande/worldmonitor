@@ -9,8 +9,8 @@ const FEAR_GREED_TTL = 64800; // 18h = 3x 6h interval
 
 const FRED_PREFIX = 'economic:fred:v1';
 
-// --- Yahoo Finance fetching (16 symbols, 150ms gaps) ---
-const YAHOO_SYMBOLS = ['^GSPC','^VIX','^VIX9D','^VIX3M','^SKEW','^MMTH','C:ISSU','GLD','TLT','SPY','RSP','DX-Y.NYB','XLK','XLF','XLE','XLV'];
+// --- Yahoo Finance fetching (15 symbols, 150ms gaps) ---
+const YAHOO_SYMBOLS = ['^GSPC','^VIX','^VIX9D','^VIX3M','^SKEW','C:ISSU','GLD','TLT','SPY','RSP','DX-Y.NYB','XLK','XLF','XLE','XLV'];
 
 async function fetchYahooSymbol(symbol) {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=3mo`;
@@ -57,6 +57,20 @@ async function fetchCBOE() {
   };
   const [totalPc, equityPc] = await Promise.all([parseLastValue(totalResp), parseLastValue(equityResp)]);
   return { totalPc, equityPc };
+}
+
+// --- Barchart $S5TH: % of S&P 500 above 200d MA ---
+async function fetchBarchartS5TH() {
+  try {
+    const resp = await fetch('https://www.barchart.com/stocks/quotes/%24S5TH', {
+      headers: { 'User-Agent': CHROME_UA, Accept: 'text/html,application/xhtml+xml' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) return null;
+    const html = await resp.text();
+    const m = html.match(/"lastPrice"\s*:\s*"?([\d.]+)"?/);
+    return m ? parseFloat(m[1]) : null;
+  } catch { return null; }
 }
 
 // --- CNN Fear & Greed ---
@@ -295,12 +309,13 @@ async function fetchAll() {
   const prevSnapshot = await readSeedSnapshot(FEAR_GREED_KEY).catch(() => null);
   const previousScore = prevSnapshot?.composite?.score ?? null;
 
-  const [yahooResults, cboeResult, cnnResult, aaiiResult, macroSignals] = await Promise.allSettled([
+  const [yahooResults, cboeResult, cnnResult, aaiiResult, macroSignals, barchartResult] = await Promise.allSettled([
     fetchAllYahoo(),
     fetchCBOE(),
     fetchCNN(),
     fetchAAII(),
     readMacroSignals(),
+    fetchBarchartS5TH(),
   ]);
 
   const yahoo = yahooResults.status === 'fulfilled' ? yahooResults.value : {};
@@ -324,7 +339,6 @@ async function fetchAll() {
   const vix9d = yahoo['^VIX9D'];
   const vix3m = yahoo['^VIX3M'];
   const skew = yahoo['^SKEW'];
-  const mmth = yahoo['^MMTH'];
   const cissu = yahoo['C:ISSU'];
   const gld = yahoo['GLD'], tlt = yahoo['TLT'], spy = yahoo['SPY'], rsp = yahoo['RSP'];
   const dxy = yahoo['DX-Y.NYB'];
@@ -334,8 +348,16 @@ async function fetchAll() {
   const vix9dPrice = vix9d?.price ?? null;
   const vix3mPrice = vix3m?.price ?? null;
   const skewPrice = skew?.price ?? null;
-  const mmthPrice = mmth?.price ?? null;
   const sofrRate = fredLatest(sofrObs);
+
+  // pctAbove200d: Barchart $S5TH (exact) → RSP/SPY relative-strength proxy (fallback)
+  let pctAbove200d = barchartResult.status === 'fulfilled' ? barchartResult.value : null;
+  if (pctAbove200d == null && rsp?.closes?.length >= 5 && spy?.closes?.length >= 5) {
+    const mean = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
+    const rspRatio = rsp.closes.at(-1) / mean(rsp.closes);
+    const spyRatio = spy.closes.at(-1) / mean(spy.closes);
+    if (spyRatio > 0) pctAbove200d = Math.round(clamp((rspRatio / spyRatio - 0.9) / 0.2 * 100, 0, 100));
+  }
   const cryptoFg = macro?.fearGreed?.score ?? macro?.signals?.fearGreed?.value ?? null;
 
   let advDecRatio = null;
@@ -348,7 +370,7 @@ async function fetchAll() {
     volatility: scoreCategory('volatility', { vix: vixLive, vix9d: vix9dPrice, vix3m: vix3mPrice }),
     positioning: scoreCategory('positioning', { totalPc: cboe.totalPc, equityPc: cboe.equityPc, skew: skewPrice }),
     trend: scoreCategory('trend', { prices: gspc?.closes ?? [] }),
-    breadth: scoreCategory('breadth', { mmthPrice, rspCloses: rsp?.closes, spyCloses: spy?.closes, advDecRatio }),
+    breadth: scoreCategory('breadth', { mmthPrice: pctAbove200d, rspCloses: rsp?.closes, spyCloses: spy?.closes, advDecRatio }),
     momentum: scoreCategory('momentum', { spxCloses: gspc?.closes, sectorCloses: { XLK: xlk?.closes, XLF: xlf?.closes, XLE: xle?.closes, XLV: xlv?.closes } }),
     liquidity: scoreCategory('liquidity', { m2Obs, walclObs, sofr: sofrRate }),
     credit: scoreCategory('credit', { hyObs, igObs }),
@@ -387,7 +409,7 @@ async function fetchAll() {
       putCall:  cboe.totalPc != null ? { value: cboe.totalPc } : null,
       vix:      vixLive != null ? { value: vixLive } : null,
       hySpread: hySpreadVal != null ? { value: hySpreadVal } : null,
-      pctAbove200d: mmthPrice != null ? { value: mmthPrice } : null,
+      pctAbove200d: pctAbove200d != null ? { value: pctAbove200d } : null,
       yield10y: fredLatest(dgs10Obs) != null ? { value: fredLatest(dgs10Obs) } : null,
       fedRate:  fedRateStr ? { value: fedRateStr } : null,
     },
