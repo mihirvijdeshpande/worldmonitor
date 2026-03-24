@@ -5218,6 +5218,10 @@ describe('phase 2 scoring recalibration + prompt excellence', () => {
     // Original chokepoints must still work
     assert.equal(extractImpactRouteFacilityKey(['Strait of Hormuz tanker attack']), 'Strait of Hormuz');
     assert.equal(extractImpactRouteFacilityKey(['Suez Canal blockage ongoing']), 'Suez Canal');
+    // Region-level names now resolve (candidate titles use region, not facility name)
+    assert.equal(extractImpactRouteFacilityKey(['Red Sea maritime disruption']), 'Red Sea');
+    assert.equal(extractImpactRouteFacilityKey(['Persian Gulf shipping pressure']), 'Persian Gulf');
+    assert.equal(extractImpactRouteFacilityKey(['South China Sea naval tensions']), 'South China Sea');
   });
 
   it('T9: scoreImpactExpansionQuality — high commodity rate + chain coverage yields high composite', () => {
