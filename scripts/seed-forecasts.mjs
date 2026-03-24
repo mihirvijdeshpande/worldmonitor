@@ -14140,6 +14140,12 @@ function scoreImpactExpansionQuality(validation, candidatePackets = []) {
   const commodityRate = mapped.filter((h) => h.commodity && h.commodity !== '').length
     / Math.max(mapped.length, 1);
 
+  // commodity diversity: unique distinct commodities across mapped, normalized by nCandidates.
+  // Penalizes runs where every candidate produces the same commodity (e.g. all crude_oil).
+  // Score: min(uniqueCommodities / nCandidates, 1.0). 3 candidates all crude_oil → 1/3 = 0.33.
+  const uniqueCommodities = new Set(mapped.map((h) => (h.commodity || '').toLowerCase().trim()).filter(Boolean));
+  const commodityDiversity = Math.min(uniqueCommodities.size / nCandidates, 1.0);
+
   // geography specificity: % of mapped with non-empty geography (free-form) or region (legacy)
   const geographyRate = mapped.filter((h) => (h.geography || h.region || '').trim().length >= 4).length
     / Math.max(mapped.length, 1);
@@ -14165,15 +14171,18 @@ function scoreImpactExpansionQuality(validation, candidatePackets = []) {
   // mapped rate
   const mappedRate = mapped.length / Math.max(hypotheses.length, 1);
 
+  // commodityDiversity is the highest-weight term: 3 candidates all crude_oil → 0.33 → composite ~0.75
+  // This reliably triggers the critique loop when the LLM defaults to the same commodity for all runs.
   const composite = clampUnitInterval(
-    (commodityRate * 0.25)
-    + (geographyRate * 0.25)
-    + (diversityScore * 0.25)
-    + (chainCoverage * 0.15)
+    (commodityDiversity * 0.35)
+    + (geographyRate * 0.20)
+    + (diversityScore * 0.15)
+    + (chainCoverage * 0.10)
+    + (commodityRate * 0.10)
     + (assetRate * 0.05)
     + (mappedRate * 0.05),
   );
-  return { commodityRate, geographyRate, assetRate, diversityScore, chainCoverage, mappedRate, composite, mappedCount: mapped.length };
+  return { commodityRate, commodityDiversity, geographyRate, assetRate, diversityScore, chainCoverage, mappedRate, composite, mappedCount: mapped.length };
 }
 
 function buildImpactPromptCritiqueSystemPrompt() {
@@ -14183,7 +14192,7 @@ Analyze the quality metrics and sample hypotheses, then propose ONE targeted add
 Output ONLY valid JSON (no markdown fences):
 {
   "diagnosis": "Primary failure mode in 1 sentence",
-  "failure_mode": "generic_chains | missing_commodity | low_diversity | missing_third_order",
+  "failure_mode": "generic_chains | missing_commodity | low_diversity | missing_third_order | commodity_monoculture",
   "proposed_addition": "Exact text to append to the system prompt — 3 to 8 concrete example chains or rules",
   "expected_metric": "commodity_rate | diversity_score | chain_coverage",
   "confidence": 0.0
@@ -14204,9 +14213,11 @@ function buildImpactPromptCritiqueUserPrompt(qualityMetrics, mapped, candidatePa
   const candidates = candidatePackets.slice(0, 3).map((p) => (
     `  [${p.candidateIndex}] stateKind=${p.stateKind} region=${p.dominantRegion} route=${p.routeFacilityKey || 'none'} commodity=${p.commodityKey || 'none'} signals=${(p.criticalSignalTypes || []).join(',') || 'none'}`
   )).join('\n');
+  const uniqueCommoditiesInSample = [...new Set(mapped.map((h) => h.commodity || 'none').filter((c) => c !== 'none'))];
   return `QUALITY METRICS:
-- Commodity specificity: ${(qualityMetrics.commodityRate * 100).toFixed(0)}% (target >50%)
-- Variable diversity: ${(qualityMetrics.diversityScore * 100).toFixed(0)}% (target >70%)
+- Commodity diversity: ${(qualityMetrics.commodityDiversity * 100).toFixed(0)}% (target >80%) — unique commodities: ${uniqueCommoditiesInSample.join(', ') || 'none'}
+- Geography specificity: ${(qualityMetrics.geographyRate * 100).toFixed(0)}% (target >80%)
+- Key diversity: ${(qualityMetrics.diversityScore * 100).toFixed(0)}% (target >70%)
 - Chain coverage: ${(qualityMetrics.chainCoverage * 100).toFixed(0)}%
 - Composite score: ${qualityMetrics.composite.toFixed(3)}
 
@@ -14216,8 +14227,9 @@ ${candidates}
 SAMPLE HYPOTHESES (what the model produced):
 ${sample || '  (none mapped)'}
 
-DIAGNOSIS TASK: The model generates generic chains (e.g. route_disruption → inflation_pass_through) for all situations regardless of specific context.
-Propose ONE concrete addition that would steer the model toward situation-specific chains with named commodities, routes, and geopolitically-appropriate consequences.`;
+DIAGNOSIS TASK: If commodity_diversity is low, the model is defaulting to the same commodity (e.g. crude_oil) for all candidates regardless of their geopolitical context.
+If generic_chains, the model ignores candidate-specific signals and produces template chains.
+Propose ONE concrete addition that would steer the model toward situation-specific chains where each candidate gets the commodity, route, and consequence type that actually fits its geopolitical context.`;
 }
 
 async function runImpactExpansionPromptRefinement({ candidatePackets, validation, priorWorldState }) {
@@ -14232,8 +14244,8 @@ async function runImpactExpansionPromptRefinement({ candidatePackets, validation
     const baselineRaw = await redisGet(url, token, PROMPT_BASELINE_KEY);
     const baseline = typeof baselineRaw === 'object' && baselineRaw !== null ? baselineRaw : null;
 
-    const { commodityRate, diversityScore, chainCoverage, mappedRate, mappedCount } = currentScore;
-    console.log(`  [PromptRefinement] Quality breakdown — composite=${currentScore.composite.toFixed(3)} commodity=${commodityRate.toFixed(2)} diversity=${diversityScore.toFixed(2)} chain=${chainCoverage.toFixed(2)} mappedRate=${mappedRate.toFixed(2)} mapped=${mappedCount}`);
+    const { commodityRate, commodityDiversity, geographyRate, diversityScore, chainCoverage, mappedRate, mappedCount } = currentScore;
+    console.log(`  [PromptRefinement] Quality breakdown — composite=${currentScore.composite.toFixed(3)} comDiversity=${commodityDiversity.toFixed(2)} geo=${geographyRate.toFixed(2)} keyDiversity=${diversityScore.toFixed(2)} chain=${chainCoverage.toFixed(2)} commodityRate=${commodityRate.toFixed(2)} mapped=${mappedCount}`);
     for (const h of (validation?.mapped || [])) {
       console.log(`    [${h.order}] key=${h.hypothesisKey || h.variableKey || '?'} geo="${h.geography || h.region || ''}" com="${h.commodity || ''}" assets=${(h.affectedAssets || h.assetsOrSectors || []).length} score=${h.validationScore?.toFixed(3) || '?'}`);
     }
