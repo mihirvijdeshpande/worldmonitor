@@ -65,3 +65,9 @@ Escalation is not just event-driven, it is **time-driven**.
 ## 🗺️ Visualization Strategy
 - **The "Heat Pulse"**: Borders pulse based on Level (Level 1-2: Yellow/Orange; Level 5-6: Flashing Deep Red).
 - **Metric Detail**: Metrics like "School Status" or "Housing Trend" are only shown in the **Country Deep-Dive Panel** if data is actively being retrieved.
+
+---
+
+## 🛠️ Implementation Roadmap
+For the technical execution, see: **[Stability Staircase Implementation Plan](../../plans/stability_staircase_implementation_plan.md)**
+

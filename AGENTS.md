@@ -160,7 +160,23 @@ Variant is set via `VITE_VARIANT` env var. Config lives in `src/config/variants/
 | `build-desktop.yml` | Manual | Tauri desktop build |
 | `test-linux-app.yml` | Manual | Linux AppImage smoke test |
 
+## 📋 Implementation & Documentation Protocol
+
+All agents working on this project MUST adhere to the following audit trail protocol to ensure session-to-session persistence:
+
+1.  **Architectural Decision Records (ADRs)**:
+    -   **File**: `docs/decisions.md`
+    -   **Rule**: ALL architectural pivots and core logic decisions must be recorded here.
+    -   **Format**: **Newest on top** (reverse-chronological). Never delete old entries.
+2.  **Task Tracking**:
+    -   **File**: `tasks/{PROJECT_NAME}.md`
+    -   **Rule**: Use granular checklists for current work. Mark as `[x]Done` incrementally. 
+3.  **Roadmap Retrieval**:
+    -   **File**: `plans/`
+    -   **Rule**: Always check for existing implementation plans in `plans/` before starting a major task.
+
 ## Pre-Push Hook
+
 
 Runs automatically before `git push`:
 

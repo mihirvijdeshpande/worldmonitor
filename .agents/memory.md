@@ -20,3 +20,24 @@ The project uses a structured `.md` file system in the `todos/` directory to tra
 - **March 2026**: Introduced **Deep Forecast & Intelligence** domain. Uses `simulation-package.json` R2 artifacts for LLM consumption. Added `CrossSourceSignalsPanel` and `HormuzPanel` for Supply Chain tracking.
 - **March 2026**: Formalized the **Stability Escalation Model (Plague Model)**. Uses a 6-tier staircase (Awareness to Collapse) for tracking government responses (Schools, WFH, Rationing, Emergencies). Follows an "Available Presence" UI policy (no N/A).
 
+## 📋 Implementation Workflow & Audit Trail
+
+To ensure consistency and long-term project health, all agents MUST follow this documentation structure:
+
+1.  **ADRs (Architectural Decision Records)**:
+    -   Location: `docs/decisions.md`
+    -   Process: Record ALL architectural pivots and core logic decisions here. 
+    -   Order: **Newest on top**. Never delete old ADRs; keep them for historical context.
+2.  **Task Tracking**:
+    -   Location: `tasks/{PROJECT_NAME}/` or `tasks/{TASK_NAME}.md`.
+    -   Process: Partition work into phases. Mark items as `[x]Done` as you proceed.
+3.  **Active Roadmaps**: 
+    -   Location: `plans/`. 
+    -   Process: Before starting a major feature, check for a persistent implementation plan in `plans/`.
+
+### Stability Staircase Standards:
+- **No Placeholders**: If data is not available, the UI component MUST NOT render (no "N/A" text).
+- **GSI logic**: Aggregate G20 statuses for the "Global Stress" alert.
+- **Fail Cascade**: Follow the 4-chain Fail Chain (Economic, Infra, Military, Institutional).
+
+
