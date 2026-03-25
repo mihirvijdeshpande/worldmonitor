@@ -1,15 +1,39 @@
 #!/usr/bin/env node
 
 import { loadEnvFile, CHROME_UA, runSeed, readSeedSnapshot, sleep } from './_seed-utils.mjs';
-import { ProxyAgent, fetch as undiciF } from 'undici';
-
+import { execFileSync } from 'child_process';
 loadEnvFile(import.meta.url);
 
-const _proxyAuth = process.env.OREF_PROXY_AUTH || '';
-const _proxyAgent = _proxyAuth ? new ProxyAgent(`http://${_proxyAuth}`) : null;
-const fetchViaProxy = _proxyAgent
-  ? (url, opts = {}) => undiciF(url, { ...opts, dispatcher: _proxyAgent })
-  : fetch;
+// Proxy for Yahoo Finance — Railway container IPs get blocked by Yahoo after restarts.
+// Supports PROXY_URL="host:port:user:pass" (Decodo) or OREF_PROXY_AUTH="user:pass@host:port" (Froxy).
+function resolveProxy() {
+  const raw = process.env.PROXY_URL || '';
+  if (raw) {
+    const parts = raw.split(':');
+    if (parts.length === 4) {
+      const [host, port, user, pass] = parts;
+      return `${user}:${pass}@${host.replace(/^gate\./, 'us.')}:${port}`;
+    }
+    return raw;
+  }
+  return process.env.OREF_PROXY_AUTH || '';
+}
+const _proxyAuth = resolveProxy();
+
+// curl-based fetch for sources that block Railway IPs (Yahoo Finance).
+// Returns response body as string; throws on non-2xx.
+function curlFetch(url, headers = {}) {
+  const args = ['-sS', '--compressed', '--max-time', '15', '-L'];
+  if (_proxyAuth) args.push('-x', `http://${_proxyAuth}`);
+  for (const [k, v] of Object.entries(headers)) args.push('-H', `${k}: ${v}`);
+  args.push('-w', '\n%{http_code}');
+  args.push(url);
+  const raw = execFileSync('curl', args, { encoding: 'utf8', timeout: 20000, stdio: ['pipe', 'pipe', 'pipe'] });
+  const nl = raw.lastIndexOf('\n');
+  const status = parseInt(raw.slice(nl + 1).trim(), 10);
+  if (status < 200 || status >= 300) throw Object.assign(new Error(`HTTP ${status}`), { status });
+  return raw.slice(0, nl);
+}
 
 const FEAR_GREED_KEY = 'market:fear-greed:v1';
 const FEAR_GREED_TTL = 64800; // 18h = 3x 6h interval
@@ -20,14 +44,17 @@ const FRED_PREFIX = 'economic:fred:v1';
 const YAHOO_SYMBOLS = ['^GSPC','^VIX','^VIX9D','^VIX3M','^SKEW','C:ISSU','GLD','TLT','SPY','RSP','DX-Y.NYB','XLK','XLF','XLE','XLV'];
 
 async function fetchYahooSymbol(symbol) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=3mo`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y`;
+  const headers = { 'User-Agent': CHROME_UA, Accept: 'application/json' };
   try {
-    const resp = await fetch(url, {
-      headers: { 'User-Agent': CHROME_UA, Accept: 'application/json' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!resp.ok) { console.warn(`  Yahoo ${symbol}: HTTP ${resp.status}`); return null; }
-    const data = await resp.json();
+    // Use curl+proxy when available — Railway container IPs are periodically blocked by Yahoo.
+    const text = _proxyAuth
+      ? curlFetch(url, headers)
+      : await fetch(url, { headers, signal: AbortSignal.timeout(10_000) }).then(r => {
+          if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
+          return r.text();
+        });
+    const data = JSON.parse(text);
     const result = data?.chart?.result?.[0];
     if (!result) return null;
     const closes = result.indicators?.quote?.[0]?.close ?? [];
@@ -35,7 +62,8 @@ async function fetchYahooSymbol(symbol) {
     const price = result.meta?.regularMarketPrice ?? validCloses.at(-1) ?? null;
     return { symbol, price, closes: validCloses };
   } catch (e) {
-    console.warn(`  Yahoo ${symbol}: ${e.message}`);
+    const cause = e.cause?.message ?? e.cause?.code ?? '';
+    console.warn(`  Yahoo ${symbol}: ${e.message}${cause ? ` [${cause}]` : ''}`);
     return null;
   }
 }
@@ -49,23 +77,22 @@ async function fetchAllYahoo() {
   return results;
 }
 
-// --- CBOE P/C ratios ---
+// --- Put/Call ratio via Barchart $CPC (replaces direct CBOE CDN which is Cloudflare-blocked) ---
 async function fetchCBOE() {
-  const headers = { 'User-Agent': CHROME_UA, Referer: 'https://www.cboe.com/' };
-  const [totalResp, equityResp] = await Promise.allSettled([
-    fetchViaProxy('https://cdn.cboe.com/api/global/us_indices/daily_prices/totalpc.csv', { headers, signal: AbortSignal.timeout(10_000) }),
-    fetchViaProxy('https://cdn.cboe.com/api/global/us_indices/daily_prices/equitypc.csv', { headers, signal: AbortSignal.timeout(10_000) }),
-  ]);
-  const parseLastValue = async (resp, name) => {
-    if (resp.status !== 'fulfilled') return null;
-    if (!resp.value.ok) { console.warn(`  CBOE ${name}: HTTP ${resp.value.status}`); return null; }
-    const text = await resp.value.text();
-    const lines = text.trim().split('\n').filter(l => l.trim());
-    const last = lines.at(-1)?.split(',');
-    return last?.length >= 2 ? parseFloat(last[1]) : null;
-  };
-  const [totalPc, equityPc] = await Promise.all([parseLastValue(totalResp, 'totalpc'), parseLastValue(equityResp, 'equitypc')]);
-  return { totalPc, equityPc };
+  try {
+    const resp = await fetch('https://www.barchart.com/stocks/quotes/%24CPC', {
+      headers: { 'User-Agent': CHROME_UA, Accept: 'text/html,application/xhtml+xml' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) { console.warn(`  Barchart $CPC: HTTP ${resp.status}`); return {}; }
+    const html = await resp.text();
+    const block = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? html;
+    const m = block.match(/"lastPrice"\s*:\s*"?([\d.]+)"?/);
+    const val = m ? parseFloat(m[1]) : NaN;
+    const totalPc = Number.isFinite(val) ? val : null;
+    if (totalPc == null) console.warn('  Barchart $CPC: price not found in page');
+    return { totalPc, equityPc: null };
+  } catch (e) { console.warn(`  Barchart $CPC: ${e.message}`); return {}; }
 }
 
 // --- Barchart $S5TH: % of S&P 500 above 200d MA ---
@@ -85,22 +112,31 @@ async function fetchBarchartS5TH() {
 }
 
 // --- CNN Fear & Greed ---
+// /current endpoint works without proxy; requires Mac UA (Windows UA returns 418 bot-block).
 async function fetchCNN() {
   try {
-    const date = new Date().toISOString().slice(0,10).replace(/-/g,'');
-    const resp = await fetchViaProxy(`https://production.dataviz.cnn.io/index/fearandgreed/graphdata/${date}`, {
-      headers: { 'User-Agent': CHROME_UA, Accept: 'application/json', Referer: 'https://www.cnn.com/markets/fear-and-greed' },
-      signal: AbortSignal.timeout(8_000),
+    const resp = await fetch('https://production.dataviz.cnn.io/index/fearandgreed/current', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+        Accept: 'application/json',
+        Referer: 'https://www.cnn.com/markets/fear-and-greed',
+      },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!resp.ok) { console.warn(`  CNN F&G: HTTP ${resp.status}`); return null; }
     const data = await resp.json();
-    const score = data?.fear_and_greed?.score;
-    const rating = data?.fear_and_greed?.rating;
+    const score = data?.score ?? data?.fear_and_greed?.score;
+    const rating = data?.rating ?? data?.fear_and_greed?.rating;
     return score != null ? { score: Math.round(score), label: rating ?? labelFromScore(Math.round(score)) } : null;
   } catch (e) { console.warn(`  CNN F&G: ${e.message}`); return null; }
 }
 
 // --- AAII Sentiment (LOW reliability, always wrapped, non-blocking) ---
+// Table layout: Reported Date | Bullish | Neutral | Bearish
+// Extract the 3 percentage cells from the first (most recent) data row
+// using class="tableTxt" cells — positional, not label-based.
+// Label-based regexes fail because "Bearish" header precedes the Bullish
+// data cell (30.4%) in the DOM before the actual Bearish cell (52.0%).
 async function fetchAAII() {
   try {
     const resp = await fetch('https://www.aaii.com/sentimentsurvey/sent_results', {
@@ -109,10 +145,11 @@ async function fetchAAII() {
     });
     if (!resp.ok) return null;
     const html = await resp.text();
-    const bullMatch = html.match(/Bullish[^%]*?([\d.]+)%/i);
-    const bearMatch = html.match(/Bearish[^%]*?([\d.]+)%/i);
-    if (!bullMatch || !bearMatch) return null;
-    return { bull: parseFloat(bullMatch[1]), bear: parseFloat(bearMatch[1]) };
+    // Columns 1,2,3 of first data row = Bullish%, Neutral%, Bearish%
+    const pcts = [...html.matchAll(/<td[^>]*class="tableTxt"[^>]*>([\d.]+)%/g)]
+      .map(m => parseFloat(m[1]));
+    if (pcts.length < 3) return null;
+    return { bull: pcts[0], bear: pcts[2] };
   } catch (e) {
     console.warn('  AAII: fetch failed:', e.message, '(using degraded Sentiment)');
     return null;
@@ -189,6 +226,14 @@ function fredNMonthsAgo(obs, months) {
   const v = parseFloat(obs[idx]?.value ?? 'NaN');
   return Number.isFinite(v) ? v : null;
 }
+// For daily FRED series, 1 "month" ≈ 20 trading days — use this for trend comparisons
+function fredNTradingDaysAgo(obs, days) {
+  if (!obs) return null;
+  const idx = obs.length - 1 - days;
+  if (idx < 0) return null;
+  const v = parseFloat(obs[idx]?.value ?? 'NaN');
+  return Number.isFinite(v) ? v : null;
+}
 function labelFromScore(s) {
   if (s <= 20) return 'Extreme Fear';
   if (s <= 40) return 'Fear';
@@ -226,7 +271,8 @@ function scoreCategory(name, inputs) {
     case 'volatility': {
       const { vix, vix9d, vix3m } = inputs;
       if (vix == null) return { score: 50, inputs };
-      const vixScore = clamp(100 - ((vix - 12) / 28) * 100, 0, 100);
+      // VIX range 12–35: neutral at ~23.5 (historical avg ~19-20). Old range 12-40 centered neutral at VIX=26 — too permissive.
+      const vixScore = clamp(100 - ((vix - 12) / 23) * 100, 0, 100);
       const termScore = (vix9d != null && vix3m != null) ? (vix / vix3m < 1 ? 70 : 30) : 50;
       const termStructure = (vix9d != null && vix3m != null) ? (vix / vix3m < 1 ? 'contango' : 'backwardation') : 'unknown';
       return { score: Math.round(vixScore * 0.7 + termScore * 0.3), inputs: { vix, vix9d, vix3m, termStructure } };
@@ -276,7 +322,8 @@ function scoreCategory(name, inputs) {
       const m2Yoy = (m2Latest && m2Ago && m2Ago !== 0) ? ((m2Latest - m2Ago) / m2Ago) * 100 : null;
       const walclLatest = fredLatest(walclObs), walclAgo = fredNMonthsAgo(walclObs, 1);
       const fedBsMom = (walclLatest && walclAgo && walclAgo !== 0) ? ((walclLatest - walclAgo) / walclAgo) * 100 : null;
-      const m2Score = m2Yoy != null ? clamp(m2Yoy * 10 + 50, 0, 100) : 50;
+      // M2 YoY: normal annual growth is 4-6%; use 5x multiplier so 5% YoY ≈ 75 (not pegged at 100 like 10x was)
+      const m2Score = m2Yoy != null ? clamp(m2Yoy * 5 + 50, 0, 100) : 50;
       const fedScore = fedBsMom != null ? clamp(fedBsMom * 20 + 50, 0, 100) : 50;
       const sofrScore = sofr != null ? clamp(100 - sofr * 15, 0, 100) : 50;
       return { score: Math.round(m2Score * 0.4 + fedScore * 0.3 + sofrScore * 0.3), inputs: { m2Yoy, fedBsMom, sofr } };
@@ -284,9 +331,14 @@ function scoreCategory(name, inputs) {
     case 'credit': {
       const { hyObs, igObs } = inputs;
       const hySpread = fredLatest(hyObs), igSpread = fredLatest(igObs);
-      const hyScore = hySpread != null ? clamp(100 - ((hySpread - 3.0) / 5.0) * 100, 0, 100) : 50;
-      const igScore = igSpread != null ? clamp(100 - ((igSpread - 0.8) / 2.0) * 100, 0, 100) : 50;
-      const hyPrev = fredNMonthsAgo(hyObs, 1);
+      // HY OAS: historical range 2.0% (all-time tights) to 10.0% (crisis). Long-run avg ~5%.
+      // Old baseline was 3.0% (near tights), causing scores near 100 in normal conditions.
+      const hyScore = hySpread != null ? clamp(100 - ((hySpread - 2.0) / 8.0) * 100, 0, 100) : 50;
+      // IG OAS: historical range 0.4% (tights) to 3.0% (stressed). Long-run avg ~1.3%.
+      const igScore = igSpread != null ? clamp(100 - ((igSpread - 0.4) / 2.6) * 100, 0, 100) : 50;
+      // Use ~20 trading days (1 calendar month) for trend — fredNMonthsAgo(obs,1) only steps back
+      // 1 observation on daily data (= yesterday), which is noise not a trend signal.
+      const hyPrev = fredNTradingDaysAgo(hyObs, 20);
       const hyTrend = (hySpread != null && hyPrev != null) ? (hySpread < hyPrev ? 'narrowing' : hySpread > hyPrev ? 'widening' : 'stable') : 'stable';
       const trendScore = hyTrend === 'narrowing' ? 70 : hyTrend === 'widening' ? 30 : 50;
       return { score: Math.round(hyScore * 0.4 + igScore * 0.3 + trendScore * 0.3), inputs: { hySpread, igSpread, hyTrend30d: hyTrend } };
@@ -334,6 +386,10 @@ async function fetchAll() {
   const cnn = cnnResult.status === 'fulfilled' ? cnnResult.value : null;
   const aaii = aaiiResult.status === 'fulfilled' ? aaiiResult.value : null;
   const macro = macroSignals.status === 'fulfilled' ? macroSignals.value : null;
+
+  // Source status summary — visible in Railway container logs
+  const yahooCount = Object.values(yahoo).filter(Boolean).length;
+  console.log(`  Sources: Yahoo=${yahooCount}/${YAHOO_SYMBOLS.length} | putCall=${cboe.totalPc ?? 'null'} | CNN=${cnn ? cnn.score : 'null'} | AAII bull=${aaii ? aaii.bull : 'null'} | Barchart=$S5TH=${barchartResult.status === 'fulfilled' ? (barchartResult.value ?? 'null') : 'err'} | proxy=${_proxyAuth ? 'yes' : 'no'}`);
 
   if (yahooResults.status === 'rejected') console.warn('  Yahoo batch failed:', yahooResults.reason?.message);
   if (cboeResult.status === 'rejected') console.warn('  CBOE failed:', cboeResult.reason?.message);
