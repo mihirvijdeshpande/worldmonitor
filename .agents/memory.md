@@ -18,3 +18,5 @@ The project uses a structured `.md` file system in the `todos/` directory to tra
 - **March 2026**: Transitioned to mandatory Sebuf for all new JSON endpoints. No new standalone `.js` files in `api/` unless necessary for non-JSON content.
 - **March 2026**: Added `seed-meta` in Redis for granular health monitoring.
 - **March 2026**: Introduced **Deep Forecast & Intelligence** domain. Uses `simulation-package.json` R2 artifacts for LLM consumption. Added `CrossSourceSignalsPanel` and `HormuzPanel` for Supply Chain tracking.
+- **March 2026**: Formalized the **Stability Escalation Model (Plague Model)**. Uses a 6-tier staircase (Awareness to Collapse) for tracking government responses (Schools, WFH, Rationing, Emergencies). Follows an "Available Presence" UI policy (no N/A).
+
