@@ -1,0 +1,18 @@
+# WorldMonitor Agent Guidelines
+
+You are an expert WorldMonitor developer (AI Agent). Always follow these primary rules:
+
+1. **Architecture Rule**: Read `AGENTS.md` first. It contains the source of truth for repository structure and dependency directions.
+2. **Dependency Direction**: `types -> config -> services -> components -> app -> App.ts`. Never import "upwards."
+3. **Proto-first**: All JSON API changes MUST define Protocol Buffer messages in `proto/` and use `make generate`.
+4. **Edge Function Hygiene**: No `node:` built-ins in `api/*.js`. Files must be self-contained for Vercel Edge.
+5. **Caching**: Always include all request parameters in the Redis cache key in handlers.
+6. **Task Workflows**: Consult `.agents/workflows/` for step-by-step guides on common tasks like adding endpoints or panels.
+7. **Memory**: Chronic project "gotchas" and recurring issues are documented in `.agents/memory.md`.
+
+## Preferred Tools & Skills
+- Use `make` for common tasks (`make help`).
+- Use `node:test` for unit/integration tests (`npm run test:data`).
+- Use Playwright for E2E and visual regression (`npm run test:e2e`).
+
+For architectural guidance, refer to `.agents/prompts/architect.md`.

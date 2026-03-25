@@ -40,6 +40,7 @@ Real-time global intelligence dashboard. TypeScript SPA (Vite + Preact) with 86 
 │   └── sidecar/            # Node.js sidecar API server
 ├── tests/                  # Unit/integration tests (node:test runner)
 ├── e2e/                    # Playwright E2E specs
+├── todos/                  # Structured technical debt (P1-P3 tasks)
 ├── docs/                   # Mintlify documentation site
 ├── docker/                 # Docker build for Railway services
 ├── deploy/                 # Deployment configs
@@ -186,6 +187,14 @@ Runs automatically before `git push`:
 - Yahoo Finance requests must be staggered (150ms delays)
 - New data sources MUST have bootstrap hydration wired in `api/bootstrap.js`
 - Redis seed scripts MUST write `seed-meta:<key>` for health monitoring
+
+## Agent Framework (Context & Skills)
+
+- [Agent Framework Overview](.agents/README.md)
+- [Agent Skills & Capabilities](.agents/skills.md)
+- [Project Memory & Gotchas](.agents/memory.md)
+- [Add API Endpoint Workflow](.agents/workflows/add-api-endpoint.md)
+- [Add UI Panel Workflow](.agents/workflows/add-ui-panel.md)
 
 ## External References
 
